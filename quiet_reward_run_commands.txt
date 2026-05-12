@@ -12,24 +12,24 @@
 
 # Basic Fast Sac
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac \
-    simulator:isaacgym \
-    logger:wandb \
-    --logger.entity robox \
-    --logger.project holosoma \
-    --logger.video.enabled=False \
-    --logger.name basic_fast_sac \
-    --training.seed 1 \
-    --training.num-envs 4096
+  exp:g1-23dof-fast-sac \
+  simulator:isaacgym \
+  logger:wandb \
+  --logger.entity robox \
+  --logger.project holosoma \
+  --logger.video.enabled False \
+  --logger.name basic_fast_sac \
+  --training.seed 1 \
+  --training.num-envs 4096
 
 # Start : Not Gated 1.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-not-gated \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
     simulator:isaacgym \
     logger:wandb \
     --logger.entity robox \
     --logger.project holosoma \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.name 0_iteration_not_gated_quiet_1.00 \
     --training.seed 1 \
     --training.num-envs 4096 \
@@ -37,12 +37,12 @@ python src/holosoma/holosoma/train_agent.py \
 
 # Start : Not Gated 5.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-not-gated \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
     simulator:isaacgym \
     logger:wandb \
     --logger.entity robox \
     --logger.project holosoma \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.name 0_iteration_not_gated_quiet_5.00 \
     --training.seed 1 \
     --training.num-envs 4096 \
@@ -50,12 +50,12 @@ python src/holosoma/holosoma/train_agent.py \
 
 # Start : Not Gated 10.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-not-gated \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
     simulator:isaacgym \
     logger:wandb \
     --logger.entity robox \
     --logger.project holosoma \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.name 0_iteration_not_gated_quiet_10.00 \
     --training.seed 1 \
     --training.num-envs 4096 \
@@ -63,12 +63,12 @@ python src/holosoma/holosoma/train_agent.py \
 
 # Start : Gated 1.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-gated \
+    exp:g1-23dof-fast-sac-quiet-gated \
     simulator:isaacgym \
     logger:wandb \
     --logger.entity robox \
     --logger.project holosoma \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.name 0_iteration_not_gated_quiet_1.00 \
     --training.seed 1 \
     --training.num-envs 4096 \
@@ -76,12 +76,12 @@ python src/holosoma/holosoma/train_agent.py \
 
 # Start : Gated 5.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-gated \
+    exp:g1-23dof-fast-sac-quiet-gated \
     simulator:isaacgym \
     logger:wandb \
     --logger.entity robox \
     --logger.project holosoma \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.name 0_iteration_not_gated_quiet_5.00 \
     --training.seed 1 \
     --training.num-envs 4096 \
@@ -89,12 +89,12 @@ python src/holosoma/holosoma/train_agent.py \
 
 # Start : Gated 10.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-gated \
+    exp:g1-23dof-fast-sac-quiet-gated \
     simulator:isaacgym \
     logger:wandb \
     --logger.entity robox \
     --logger.project holosoma \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.name 0_iteration_not_gated_quiet_10.00 \
     --training.seed 1 \
     --training.num-envs 4096 \
@@ -102,11 +102,11 @@ python src/holosoma/holosoma/train_agent.py \
 
 # 12.000 iteration : Not Gated 1.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-not-gated \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
     simulator:isaacgym \
     logger:wandb \
     --training.checkpoint=logs_12.000/model_0012000.pt \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.entity robox \
     --logger.project holosoma \
     --logger.name 12_000_iteration_gated_quiet_1.00 \
@@ -114,11 +114,11 @@ python src/holosoma/holosoma/train_agent.py \
 
 # 12.000 iteration : Not Gated 5.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-not-gated \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
     simulator:isaacgym \
     logger:wandb \
     --training.checkpoint=logs_12.000/model_0012000.pt \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.entity robox \
     --logger.project holosoma \
     --logger.name 12_000_iteration_gated_quiet_5.00 \
@@ -126,11 +126,11 @@ python src/holosoma/holosoma/train_agent.py \
 
 # 12.000 iteration : Not Gated 10.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-not-gated \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
     simulator:isaacgym \
     logger:wandb \
     --training.checkpoint=logs_12.000/model_0012000.pt \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.entity robox \
     --logger.project holosoma \
     --logger.name 12_000_iteration_gated_quiet_10.00 \
@@ -138,11 +138,11 @@ python src/holosoma/holosoma/train_agent.py \
 
 # 12.000 iteration : Gated 1.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-gated \
+    exp:g1-23dof-fast-sac-quiet-gated \
     simulator:isaacgym \
     logger:wandb \
     --training.checkpoint=logs_12.000/model_0012000.pt \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.entity robox \
     --logger.project holosoma \
     --logger.name 12_000_iteration_gated_quiet_1.00 \
@@ -150,11 +150,11 @@ python src/holosoma/holosoma/train_agent.py \
 	
 # 12.000 iteration : Gated 5.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-gated \
+    exp:g1-23dof-fast-sac-quiet-gated \
     simulator:isaacgym \
     logger:wandb \
     --training.checkpoint=logs_12.000/model_0012000.pt \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.entity robox \
     --logger.project holosoma \
     --logger.name 12_000_iteration_gated_quiet_5.00 \
@@ -162,11 +162,11 @@ python src/holosoma/holosoma/train_agent.py \
 
 # 12.000 iteration : Gated 10.0
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-23dof-loco-fast-sac-quiet-gated \
+    exp:g1-23dof-fast-sac-quiet-gated \
     simulator:isaacgym \
     logger:wandb \
     --training.checkpoint=logs_12.000/model_0012000.pt \
-    --logger.video.enabled=False \
+    --logger.video.enabled False \
     --logger.entity robox \
     --logger.project holosoma \
     --logger.name 12_000_iteration_gated_quiet_10.00 \
