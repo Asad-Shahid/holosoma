@@ -72,7 +72,7 @@ python src/holosoma/holosoma/train_agent.py \
     --logger.name 0_iteration_gated_quiet_1.00 \
     --training.seed 1 \
     --training.num-envs 4096 \
-    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-1.00
+    --reward.terms.penalty-feet-landing-speed-gated.weight=-1.00
 
 # Start : Gated 5.0
 python src/holosoma/holosoma/train_agent.py \
@@ -85,7 +85,7 @@ python src/holosoma/holosoma/train_agent.py \
     --logger.name 0_iteration_gated_quiet_5.00 \
     --training.seed 1 \
     --training.num-envs 4096 \
-    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-5.00
+    --reward.terms.penalty-feet-landing-speed-gated.weight=-5.00
 
 # Start : Gated 10.0
 python src/holosoma/holosoma/train_agent.py \
@@ -98,7 +98,7 @@ python src/holosoma/holosoma/train_agent.py \
     --logger.name 0_iteration_gated_quiet_10.00 \
     --training.seed 1 \
     --training.num-envs 4096 \
-    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-10.00
+    --reward.terms.penalty-feet-landing-speed-gated.weight=-10.00
 
 # 12.000 iteration : Not Gated 1.0
 python src/holosoma/holosoma/train_agent.py \
@@ -110,7 +110,7 @@ python src/holosoma/holosoma/train_agent.py \
     --logger.entity robox \
     --logger.project holosoma \
     --logger.name 12_000_iteration_not_gated_quiet_1.00 \
-    --reward.terms.penalty-feet-landing-speed-gated.weight=-1.0
+    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-1.0
 
 # 12.000 iteration : Not Gated 5.0
 python src/holosoma/holosoma/train_agent.py \
@@ -122,7 +122,7 @@ python src/holosoma/holosoma/train_agent.py \
     --logger.entity robox \
     --logger.project holosoma \
     --logger.name 12_000_iteration_not_gated_quiet_5.00 \
-    --reward.terms.penalty-feet-landing-speed-gated.weight=-5.0
+    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-5.0
 
 # 12.000 iteration : Not Gated 10.0
 python src/holosoma/holosoma/train_agent.py \
@@ -134,7 +134,7 @@ python src/holosoma/holosoma/train_agent.py \
     --logger.entity robox \
     --logger.project holosoma \
     --logger.name 12_000_iteration_not_gated_quiet_10.00 \
-    --reward.terms.penalty-feet-landing-speed-gated.weight=-10.0
+    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-10.0
 
 # 12.000 iteration : Gated 1.0
 python src/holosoma/holosoma/train_agent.py \
