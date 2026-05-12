@@ -5,6 +5,10 @@ from holosoma.config_values.loco.g1.reward import (
     g1_23dof_loco_fast_sac,
     g1_29dof_loco,
     g1_29dof_loco_fast_sac,
+		g1_23dof_loco_fast_sac_quiet_not_gated,
+		g1_23dof_loco_quiet_not_gated,
+		g1_23dof_loco_fast_sac_quiet_gated,
+		g1_23dof_loco_quiet_gated,
 )
 from holosoma.config_values.loco.t1.reward import t1_29dof_loco, t1_29dof_loco_fast_sac
 from holosoma.config_values.wbt.g1.reward import (
@@ -21,6 +25,10 @@ DEFAULTS = {
     "t1_29dof_loco_fast_sac": t1_29dof_loco_fast_sac,
     "g1_23dof_loco": g1_23dof_loco,
     "g1_23dof_loco_fast_sac": g1_23dof_loco_fast_sac,
+		"g1_23dof_loco_fast_sac_quiet_not_gated": g1_23dof_loco_fast_sac_quiet_not_gated,
+		"g1_23dof_loco_quiet_not_gated": g1_23dof_loco_quiet_not_gated,
+		"g1_23dof_loco_fast_sac_quiet_gated": g1_23dof_loco_fast_sac_quiet_gated,
+		"g1_23dof_loco_quie_gated": g1_23dof_loco_quiet_gated,
     "g1_29dof_loco": g1_29dof_loco,
     "g1_29dof_loco_fast_sac": g1_29dof_loco_fast_sac,
     "g1_29dof_wbt": g1_29dof_wbt_reward,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from holosoma.managers.reward.base import RewardTermBase
 from holosoma.managers.observation.terms.locomotion import (
     base_forward_vector,
     get_base_ang_vel,
@@ -23,6 +24,7 @@ from holosoma.utils.rotations import (
 from holosoma.utils.safe_torch_import import torch
 
 if TYPE_CHECKING:
+    from holosoma.config_types.reward import RewardTermCfg
     from holosoma.envs.locomotion.locomotion_manager import LeggedRobotLocomotionManager
 
 
@@ -109,6 +111,80 @@ def penalty_feet_ori(env: LeggedRobotLocomotionManager) -> torch.Tensor:
     )
 
 
+def penalty_feet_landing_speed_not_gated(env: LeggedRobotLocomotionManager) -> torch.Tensor:
+    """Penalize downward foot speed.
+
+    This is a basic penalty for harsh landings and is intentionally not gated by
+    contact, gait phase, or any other event signal.
+
+    Args:
+        env: The environment instance
+
+    Returns:
+        Reward tensor [num_envs]
+    """
+    foot_vertical_vel = env.simulator._rigid_body_vel[:, env.feet_indices, 2]
+    downward_speed = torch.clamp(-foot_vertical_vel, min=0.0)
+
+    # Expose landing-speed diagnostics through the existing env logging path.
+    env.log_dict["feet_landing_speed_left"] = downward_speed[:, 0].mean()
+    env.log_dict["feet_landing_speed_right"] = downward_speed[:, 1].mean()
+    env.log_dict["feet_landing_speed_mean"] = downward_speed.mean()
+    env.log_dict["feet_landing_speed_max"] = downward_speed.max()
+
+    return torch.sum(torch.square(downward_speed), dim=1)
+
+
+
+def penalty_feet_landing_speed_gated(
+    env: LeggedRobotLocomotionManager,
+    landing_height_window: float = 0.1,
+    touchdown_phase_start: float = 0.75,
+) -> torch.Tensor:
+    """Penalize downward foot speed primarily during the pre-touchdown window.
+
+    The penalty is smoothly gated by two signals:
+    - gait phase, so it only ramps up during late swing
+    - terrain-relative foot height, so it only matters when the foot is close to the ground
+
+    Args:
+        env: The environment instance
+        landing_height_window: Height above terrain where the landing-speed penalty starts ramping up
+        touchdown_phase_start: Normalized phase in [0, 1) where the late-swing ramp begins
+
+    Returns:
+        Reward tensor [num_envs]
+    """
+    gait_state = env.command_manager.get_state("locomotion_gait")
+    terrain_state = env.terrain_manager.get_state("locomotion_terrain")
+
+    foot_vertical_vel = env.simulator._rigid_body_vel[:, env.feet_indices, 2]
+    downward_speed = torch.clamp(-foot_vertical_vel, min=0.0)
+
+    phase_progress = torch.remainder((gait_state.phase + torch.pi) / (2 * torch.pi), 1.0)
+    touchdown_phase_start = min(max(float(touchdown_phase_start), 0.0), 0.999)
+    phase_window = max(1.0 - touchdown_phase_start, 1e-6)
+    late_swing_gate = torch.clamp((phase_progress - touchdown_phase_start) / phase_window, min=0.0, max=1.0)
+    late_swing_gate = torch.square(late_swing_gate)
+
+    landing_height_window = max(float(landing_height_window), 1e-6)
+    near_ground_gate = torch.clamp(
+        (landing_height_window - terrain_state.feet_heights) / landing_height_window,
+        min=0.0,
+        max=1.0,
+    )
+    near_ground_gate = torch.square(near_ground_gate)
+
+    landing_gate = late_swing_gate * near_ground_gate
+    penalty = torch.sum(torch.square(downward_speed) * landing_gate, dim=1)
+
+    if hasattr(env, "log_dict"):
+        env.log_dict["feet_landing_speed_left"] = downward_speed[:, 0].mean().detach()
+        env.log_dict["feet_landing_speed_right"] = downward_speed[:, 1].mean().detach()
+        env.log_dict["feet_landing_speed_mean"] = downward_speed.mean().detach()
+        env.log_dict["feet_landing_speed_max"] = downward_speed.max().detach()
+
+    return penalty 
 # ================================================================================================
 # Limit Rewards
 # ================================================================================================
