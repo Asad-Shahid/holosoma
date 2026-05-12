@@ -105,7 +105,7 @@ python src/holosoma/holosoma/train_agent.py \
     exp:g1-23dof-loco-fast-sac-quiet-not-gated \
     simulator:isaacgym \
     logger:wandb \
-    --training.checkpoint=logs/model_0012000.pt \
+    --training.checkpoint=logs_12.000/model_0012000.pt \
     --logger.video.enabled=False \
     --logger.entity robox \
     --logger.project holosoma \
@@ -117,7 +117,7 @@ python src/holosoma/holosoma/train_agent.py \
     exp:g1-23dof-loco-fast-sac-quiet-not-gated \
     simulator:isaacgym \
     logger:wandb \
-    --training.checkpoint=logs/model_0012000.pt \
+    --training.checkpoint=logs_12.000/model_0012000.pt \
     --logger.video.enabled=False \
     --logger.entity robox \
     --logger.project holosoma \
@@ -129,7 +129,7 @@ python src/holosoma/holosoma/train_agent.py \
     exp:g1-23dof-loco-fast-sac-quiet-not-gated \
     simulator:isaacgym \
     logger:wandb \
-    --training.checkpoint=logs/model_0012000.pt \
+    --training.checkpoint=logs_12.000/model_0012000.pt \
     --logger.video.enabled=False \
     --logger.entity robox \
     --logger.project holosoma \
@@ -141,7 +141,7 @@ python src/holosoma/holosoma/train_agent.py \
     exp:g1-23dof-loco-fast-sac-quiet-gated \
     simulator:isaacgym \
     logger:wandb \
-    --training.checkpoint=logs/model_0012000.pt \
+    --training.checkpoint=logs_12.000/model_0012000.pt \
     --logger.video.enabled=False \
     --logger.entity robox \
     --logger.project holosoma \
@@ -153,7 +153,7 @@ python src/holosoma/holosoma/train_agent.py \
     exp:g1-23dof-loco-fast-sac-quiet-gated \
     simulator:isaacgym \
     logger:wandb \
-    --training.checkpoint=logs/model_0012000.pt \
+    --training.checkpoint=logs_12.000/model_0012000.pt \
     --logger.video.enabled=False \
     --logger.entity robox \
     --logger.project holosoma \
@@ -165,7 +165,7 @@ python src/holosoma/holosoma/train_agent.py \
     exp:g1-23dof-loco-fast-sac-quiet-gated \
     simulator:isaacgym \
     logger:wandb \
-    --training.checkpoint=logs/model_0012000.pt \
+    --training.checkpoint=logs_12.000/model_0012000.pt \
     --logger.video.enabled=False \
     --logger.entity robox \
     --logger.project holosoma \
