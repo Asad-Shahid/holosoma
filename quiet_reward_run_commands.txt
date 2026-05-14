@@ -12,15 +12,16 @@
 
 # Basic Fast Sac
 python src/holosoma/holosoma/train_agent.py \
-  exp:g1-23dof-fast-sac \
-  simulator:isaacgym \
-  logger:wandb \
-  --logger.entity robox \
-  --logger.project holosoma \
-  --logger.video.enabled False \
-  --logger.name basic_fast_sac \
-  --training.seed 1 \
-  --training.num-envs 4096
+    exp:g1-23dof-fast-sac-quiet-not-gated \
+    simulator:isaacgym \
+    logger:wandb \
+    --logger.entity robox \
+    --logger.project holosoma \
+    --logger.video.enabled False \
+    --logger.name basic_fast_sac \
+    --training.seed 1 \
+    --training.num-envs 4096 \
+    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-0.0
 
 # Start : Not Gated 1.0
 python src/holosoma/holosoma/train_agent.py \
