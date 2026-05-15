@@ -173,4 +173,18 @@ python src/holosoma/holosoma/train_agent.py \
     --logger.name 12_000_iteration_gated_quiet_10.00 \
     --reward.terms.penalty-feet-landing-speed-gated.weight=-10.0
 
+# Benchmark various analysis comparison
+PYTHONPATH=src/holosoma python3 -m holosoma.analyze_quiet_runs \
+  --wandb-entity robox \
+  --wandb-project holosoma \
+  --scenario walk_slow:0.3,0,0 \
+  --scenario walk_medium:0.5,0,0 \
+  --scenario walk_fast:0.8,0,0 \
+  --scenario backward_medium:-0.5,0,0 \
+  --scenario backward_fast:-0.8,0,0 \
+  --scenario turn_medium:0,0,0.5 \
+  --scenario turn_fast:0,0,0.8 \
+  --output-dir analysis/quiet_reward \
+  --headless \
+  --plots
 
