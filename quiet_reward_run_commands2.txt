@@ -1,0 +1,59 @@
+# Commands for the runs
+# 3 runs
+# 1 run with not-gated and weight of -7.5
+# 2 runs with not-gated and curriculum weight
+# - 0 to -5
+# - -2 to -8
+
+# Start : Not Gated 7.5
+python src/holosoma/holosoma/train_agent.py \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
+    simulator:isaacgym \
+    logger:wandb \
+    --logger.entity robox \
+    --logger.project holosoma \
+    --logger.video.enabled False \
+    --logger.name 0_iteration_not_gated_quiet_7.50 \
+    --training.seed 1 \
+    --training.num-envs 4096 \
+    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-7.50
+
+# Start : Not Gated curriculum 0 -> -5
+# Note: exact initial 0.0 is not feasible with this multiplicative curriculum because the scale would remain stuck at 0.
+# so we start with 0.01
+python src/holosoma/holosoma/train_agent.py \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
+    simulator:isaacgym \
+    logger:wandb \
+    --logger.entity robox \
+    --logger.project holosoma \
+    --logger.video.enabled False \
+    --logger.name 0_iteration_not_gated_quiet_curriculum_0_to_5_ \
+    --training.seed 1 \
+    --training.num-envs 4096 \
+    --reward.terms.penalty-feet-landing-speed-not-gated.tags '["quiet_penalty_curriculum"]' \
+    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-5.0 \
+    --curriculum.setup-terms.penalty-curriculum.params.tag=quiet_penalty_curriculum \
+    --curriculum.setup-terms.penalty-curriculum.params.initial-scale=0.01 \
+    --curriculum.setup-terms.penalty-curriculum.params.min-scale=0.0 \
+    --curriculum.setup-terms.penalty-curriculum.params.max-scale=1.0 \
+    --curriculum.setup-terms.penalty-curriculum.params.degree=0.05
+
+# Start : Not Gated curriculum -2 -> -8
+python src/holosoma/holosoma/train_agent.py \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
+    simulator:isaacgym \
+    logger:wandb \
+    --logger.entity robox \
+    --logger.project holosoma \
+    --logger.video.enabled False \
+    --logger.name 0_iteration_not_gated_quiet_curriculum_2_to_8 \
+    --training.seed 1 \
+    --training.num-envs 4096 \
+    --reward.terms.penalty-feet-landing-speed-not-gated.tags '["quiet_penalty_curriculum"]' \
+    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-8.0 \
+    --curriculum.setup-terms.penalty-curriculum.params.tag=quiet_penalty_curriculum \
+    --curriculum.setup-terms.penalty-curriculum.params.initial-scale=0.25 \
+    --curriculum.setup-terms.penalty-curriculum.params.min-scale=0.25 \
+    --curriculum.setup-terms.penalty-curriculum.params.max-scale=1.0 \
+    --curriculum.setup-terms.penalty-curriculum.params.degree=0.01
