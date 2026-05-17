@@ -29,9 +29,17 @@ class RunSpec:
     experiment: str
     reward_term: str
     reward_weight: float
+    uses_penalty_scale_curriculum: bool
     resume_checkpoint: str | None
     category: str
     start_stage: str
+
+
+@dataclass(frozen=True)
+class PenaltyScalePoint:
+    global_step: int | None
+    train_num_samples: float | None
+    penalty_scale: float
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,7 @@ class ResolvedRun:
     wandb_run_path: str
     checkpoint_name: str
     checkpoint_step: int
+    penalty_scale_history: tuple[PenaltyScalePoint, ...]
 
     @property
     def checkpoint_uri(self) -> str:
@@ -70,6 +79,7 @@ def parse_quiet_reward_commands(text: str) -> list[RunSpec]:
         run_name = _extract_flag_value(command_text, "logger.name")
         experiment = _extract_experiment_name(command_text)
         reward_term, reward_weight = _extract_reward_override(command_text)
+        uses_penalty_scale_curriculum = _uses_penalty_scale_curriculum(command_text)
         resume_checkpoint = _extract_flag_value(command_text, "training.checkpoint", required=False)
 
         category = _categorize_run(run_name, reward_term)
@@ -81,6 +91,7 @@ def parse_quiet_reward_commands(text: str) -> list[RunSpec]:
                 experiment=experiment,
                 reward_term=reward_term,
                 reward_weight=reward_weight,
+                uses_penalty_scale_curriculum=uses_penalty_scale_curriculum,
                 resume_checkpoint=resume_checkpoint,
                 category=category,
                 start_stage=start_stage,
@@ -158,12 +169,16 @@ def resolve_wandb_runs(
     for spec in requested_specs:
         run = name_to_run[spec.run_name]
         checkpoint_name, checkpoint_step = _select_latest_checkpoint(run)
+        penalty_scale_history = (
+            _fetch_penalty_scale_history(run) if spec.uses_penalty_scale_curriculum else ()
+        )
         resolved_runs.append(
             ResolvedRun(
                 spec=spec,
                 wandb_run_path=f"{entity}/{project}/{run.id}",
                 checkpoint_name=checkpoint_name,
                 checkpoint_step=checkpoint_step,
+                penalty_scale_history=penalty_scale_history,
             )
         )
 
@@ -224,6 +239,10 @@ def run_analysis(
                     "experiment": resolved_run.spec.experiment,
                     "reward_term": resolved_run.spec.reward_term,
                     "reward_weight": resolved_run.spec.reward_weight,
+                    "effective_reward_weight_at_checkpoint": _effective_reward_weight_at_checkpoint(
+                        resolved_run
+                    ),
+                    "penalty_scale_at_checkpoint": _penalty_scale_at_checkpoint(resolved_run),
                     "category": resolved_run.spec.category,
                     "start_stage": resolved_run.spec.start_stage,
                     "resume_checkpoint": resolved_run.spec.resume_checkpoint or "",
@@ -266,6 +285,52 @@ def write_results(results: list[dict[str, Any]], output_dir: Path, *, generate_p
     _save_aggregate_numpy(results, output_dir)
     if generate_plots:
         _generate_plots(results, output_dir)
+
+
+def _save_penalty_scale_history(
+    resolved_runs: list[ResolvedRun],
+    output_dir: Path,
+    *,
+    generate_plots: bool,
+) -> None:
+    rows: list[dict[str, Any]] = []
+    for resolved_run in resolved_runs:
+        for index, point in enumerate(resolved_run.penalty_scale_history):
+            rows.append(
+                {
+                    "run_name": resolved_run.spec.run_name,
+                    "wandb_run_path": resolved_run.wandb_run_path,
+                    "history_index": index,
+                    "global_step": _empty_if_none(point.global_step),
+                    "train_num_samples": _empty_if_none(point.train_num_samples),
+                    "penalty_scale": point.penalty_scale,
+                    "reward_weight": resolved_run.spec.reward_weight,
+                    "effective_reward_weight": resolved_run.spec.reward_weight * point.penalty_scale,
+                    "effective_reward_weight_magnitude": abs(
+                        resolved_run.spec.reward_weight * point.penalty_scale
+                    ),
+                }
+            )
+
+    history_csv = output_dir / "penalty_scale_history.csv"
+    fieldnames = [
+        "run_name",
+        "wandb_run_path",
+        "history_index",
+        "global_step",
+        "train_num_samples",
+        "penalty_scale",
+        "reward_weight",
+        "effective_reward_weight",
+        "effective_reward_weight_magnitude",
+    ]
+    with history_csv.open("w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    if rows and generate_plots:
+        _plot_penalty_scale_history(resolved_runs, output_dir)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -350,12 +415,16 @@ def main() -> None:
                     "checkpoint_name": resolved.checkpoint_name,
                     "checkpoint_step": resolved.checkpoint_step,
                     "checkpoint_uri": resolved.checkpoint_uri,
+                    "penalty_scale_at_checkpoint": _penalty_scale_at_checkpoint(resolved),
+                    "effective_reward_weight_at_checkpoint": _effective_reward_weight_at_checkpoint(resolved),
+                    "penalty_scale_history_count": len(resolved.penalty_scale_history),
                 }
                 for resolved in resolved_runs
             ],
             indent=2,
         )
     )
+    _save_penalty_scale_history(resolved_runs, output_dir, generate_plots=args.plots)
 
     results = run_analysis(
         resolved_runs=resolved_runs,
@@ -443,6 +512,11 @@ def _extract_reward_override(command_text: str) -> tuple[str, float]:
     return match.group(1), float(match.group(2))
 
 
+def _uses_penalty_scale_curriculum(command_text: str) -> bool:
+    flag_prefix = "curriculum.setup-terms.penalty-curriculum.params"
+    return _extract_flag_value(command_text, f"{flag_prefix}.max-scale", required=False) is not None
+
+
 def _categorize_run(run_name: str, reward_term: str) -> str:
     if run_name == "basic_fast_sac":
         return "baseline"
@@ -451,6 +525,62 @@ def _categorize_run(run_name: str, reward_term: str) -> str:
     if "gated" in reward_term:
         return "gated"
     return "baseline"
+
+
+def _fetch_penalty_scale_history(run: Any) -> tuple[PenaltyScalePoint, ...]:
+    logger = _get_logger()
+    points = _scan_penalty_scale_history(run, "Env/penalty_scale")
+    if not points:
+        points = _scan_penalty_scale_history(run, "penalty_scale")
+    if points:
+        logger.info(f"Loaded {len(points)} penalty_scale points for W&B run '{run.id}'.")
+    return tuple(points)
+
+
+def _scan_penalty_scale_history(run: Any, key: str) -> list[PenaltyScalePoint]:
+    logger = _get_logger()
+    key_sets = (
+        ["global_step", "Train/num_samples", key],
+        ["global_step", key],
+        [key],
+    )
+    for keys in key_sets:
+        points: list[PenaltyScalePoint] = []
+        try:
+            history_iter = run.scan_history(keys=keys)
+            for row in history_iter:
+                value = row.get(key)
+                if value is None:
+                    continue
+                points.append(
+                    PenaltyScalePoint(
+                        global_step=_optional_int(row.get("global_step")),
+                        train_num_samples=_optional_float(row.get("Train/num_samples")),
+                        penalty_scale=float(value),
+                    )
+                )
+        except Exception as exc:
+            logger.warning(f"Could not load '{key}' history for W&B run '{run.id}': {exc}")
+            return []
+        if points:
+            return points
+    return []
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        if math.isnan(float(value)):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return float(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    numeric_value = _optional_float(value)
+    return int(numeric_value) if numeric_value is not None else None
 
 
 def _select_latest_checkpoint(run: Any) -> tuple[str, int]:
@@ -758,6 +888,8 @@ def _save_benchmark_arrays(
         "command": list(scenario.command),
         "category": resolved_run.spec.category,
         "reward_weight": resolved_run.spec.reward_weight,
+        "penalty_scale_at_checkpoint": _penalty_scale_at_checkpoint(resolved_run),
+        "effective_reward_weight_at_checkpoint": _effective_reward_weight_at_checkpoint(resolved_run),
         "checkpoint_step": resolved_run.checkpoint_step,
     }
     np.savez_compressed(
@@ -778,6 +910,8 @@ def _save_aggregate_numpy(results: list[dict[str, Any]], output_dir: Path) -> No
 
     category_by_run: dict[str, str] = {}
     weight_by_run: dict[str, float] = {}
+    effective_weight_by_run: dict[str, float] = {}
+    penalty_scale_by_run: dict[str, float] = {}
     checkpoint_step_by_run: dict[str, int] = {}
 
     for row in results:
@@ -785,6 +919,8 @@ def _save_aggregate_numpy(results: list[dict[str, Any]], output_dir: Path) -> No
         scenario_idx = scenario_index[row["scenario"]]
         category_by_run[row["run_name"]] = str(row["category"])
         weight_by_run[row["run_name"]] = float(row["reward_weight"])
+        effective_weight_by_run[row["run_name"]] = float(row["effective_reward_weight_at_checkpoint"])
+        penalty_scale_by_run[row["run_name"]] = float(row["penalty_scale_at_checkpoint"])
         checkpoint_step_by_run[row["run_name"]] = int(row["checkpoint_step"])
         for metric_idx, metric_name in enumerate(metric_names):
             metric_cube[run_idx, scenario_idx, metric_idx] = np.float32(row.get(metric_name, np.nan))
@@ -796,6 +932,8 @@ def _save_aggregate_numpy(results: list[dict[str, Any]], output_dir: Path) -> No
         metric_names=np.asarray(metric_names),
         categories=np.asarray([category_by_run[name] for name in run_names]),
         reward_weights=np.asarray([weight_by_run[name] for name in run_names], dtype=np.float32),
+        effective_reward_weights=np.asarray([effective_weight_by_run[name] for name in run_names], dtype=np.float32),
+        penalty_scales=np.asarray([penalty_scale_by_run[name] for name in run_names], dtype=np.float32),
         checkpoint_steps=np.asarray([checkpoint_step_by_run[name] for name in run_names], dtype=np.int32),
         metric_cube=metric_cube,
     )
@@ -841,7 +979,7 @@ def _plot_metric_heatmaps(results: list[dict[str, Any]], plots_dir: Path, plt) -
         {row["run_name"] for row in results},
         key=lambda name: (
             next(row["category"] for row in results if row["run_name"] == name),
-            next(float(row["reward_weight"]) for row in results if row["run_name"] == name),
+            next(_plot_weight_value(row) for row in results if row["run_name"] == name),
             name,
         ),
     )
@@ -888,11 +1026,11 @@ def _plot_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) 
             for category, color in (("not_gated", "tab:blue"), ("gated", "tab:orange")):
                 category_rows = sorted(
                     (row for row in scenario_rows if row["category"] == category),
-                    key=lambda row: float(row["reward_weight"]),
+                    key=_plot_weight_value,
                 )
                 if not category_rows:
                     continue
-                weights = [abs(float(row["reward_weight"])) for row in category_rows]
+                weights = [_plot_weight_value(row) for row in category_rows]
                 values = [float(row.get(metric_name, np.nan)) for row in category_rows]
                 axis.plot(weights, values, marker="o", label=category, color=color)
 
@@ -902,7 +1040,7 @@ def _plot_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) 
                 axis.axhline(baseline_value, color="tab:green", linestyle="--", label="baseline")
 
             axis.set_title(f"{metric_name} | {scenario_name}")
-            axis.set_xlabel("Reward Weight Magnitude")
+            axis.set_xlabel("Effective Reward Weight Magnitude")
             axis.set_ylabel(metric_name)
             axis.grid(True, alpha=0.3)
             axis.legend()
@@ -910,6 +1048,64 @@ def _plot_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) 
         fig.tight_layout()
         fig.savefig(plots_dir / f"{metric_name}_by_weight.png", dpi=200)
         plt.close(fig)
+
+
+def _plot_penalty_scale_history(resolved_runs: list[ResolvedRun], output_dir: Path) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    runs_with_history = [resolved_run for resolved_run in resolved_runs if resolved_run.penalty_scale_history]
+    if not runs_with_history:
+        return
+
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(10, 8), squeeze=False)
+    scale_axis, weight_axis = axes.flatten()
+    for resolved_run in runs_with_history:
+        points = resolved_run.penalty_scale_history
+        x_values = [
+            point.global_step if point.global_step is not None else index
+            for index, point in enumerate(points)
+        ]
+        scale_values = [point.penalty_scale for point in points]
+        effective_weight_values = [
+            abs(resolved_run.spec.reward_weight * point.penalty_scale) for point in points
+        ]
+        scale_axis.plot(x_values, scale_values, marker="o", markersize=3, label=resolved_run.spec.run_name)
+        weight_axis.plot(
+            x_values,
+            effective_weight_values,
+            marker="o",
+            markersize=3,
+            label=resolved_run.spec.run_name,
+        )
+
+    scale_axis.set_title("penalty_scale")
+    scale_axis.set_xlabel("global_step")
+    scale_axis.set_ylabel("penalty_scale")
+    scale_axis.grid(True, alpha=0.3)
+    scale_axis.legend(fontsize=8)
+
+    weight_axis.set_title("Effective Quiet Penalty Weight")
+    weight_axis.set_xlabel("global_step")
+    weight_axis.set_ylabel("|reward_weight * penalty_scale|")
+    weight_axis.grid(True, alpha=0.3)
+    weight_axis.legend(fontsize=8)
+
+    fig.tight_layout()
+    fig.savefig(plots_dir / "penalty_scale_history.png", dpi=200)
+    plt.close(fig)
+
+
+def _plot_weight_value(row: dict[str, Any]) -> float:
+    effective_weight = _optional_float(row.get("effective_reward_weight_at_checkpoint"))
+    if effective_weight is not None:
+        return abs(effective_weight)
+    return abs(float(row["reward_weight"]))
 
 
 def _concat_samples(samples):
@@ -956,6 +1152,33 @@ def _metric_names_for_plots() -> list[str]:
         "contact_fz_mean",
         "contact_fz_p95",
     ]
+
+
+def _penalty_scale_at_checkpoint(resolved_run: ResolvedRun) -> float:
+    if not resolved_run.spec.uses_penalty_scale_curriculum:
+        return 1.0
+    if not resolved_run.penalty_scale_history:
+        return float("nan")
+
+    points_with_step = [
+        point
+        for point in resolved_run.penalty_scale_history
+        if point.global_step is not None and point.global_step <= resolved_run.checkpoint_step
+    ]
+    if points_with_step:
+        return max(points_with_step, key=lambda point: point.global_step or 0).penalty_scale
+    return resolved_run.penalty_scale_history[-1].penalty_scale
+
+
+def _effective_reward_weight_at_checkpoint(resolved_run: ResolvedRun) -> float:
+    penalty_scale = _penalty_scale_at_checkpoint(resolved_run)
+    if math.isnan(penalty_scale):
+        return float("nan")
+    return resolved_run.spec.reward_weight * penalty_scale
+
+
+def _empty_if_none(value: Any) -> Any:
+    return "" if value is None else value
 
 
 def _safe_mean(values) -> float:
