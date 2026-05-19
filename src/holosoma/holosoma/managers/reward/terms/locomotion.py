@@ -193,14 +193,25 @@ def penalty_feet_landing_speed_olaf(env: LeggedRobotLocomotionManager) -> torch.
     foot_vertical_vel = env.simulator._rigid_body_vel[:, env.feet_indices, 2]
     buffer_name = "_olaf_prev_foot_vertical_vel"
     if not hasattr(env, buffer_name):
-      setattr(env, buffer_name, foot_vertical_vel.clone())
+        setattr(env, buffer_name, foot_vertical_vel.clone())
     prev_foot_vertical_vel = getattr(env, buffer_name)
     delta_vz = foot_vertical_vel - prev_foot_vertical_vel
     if hasattr(env, "episode_length_buf"):
-      delta_vz = torch.where((env.episode_length_buf > 1).unsqueeze(1),delta_vz,torch.zeros_like(delta_vz),)
+        delta_vz = torch.where((env.episode_length_buf > 1).unsqueeze(1),delta_vz,torch.zeros_like(delta_vz),)
     delta_v_max_sq = float(delta_v_max) ** 2
     penalty = torch.sum(torch.clamp(torch.square(delta_vz), max=delta_v_max_sq), dim=1)
     prev_foot_vertical_vel.copy_(foot_vertical_vel)
+    if hasattr(env, "log_dict"):
+        downward_speed = torch.clamp(-foot_vertical_vel, min=0.0)
+        olaf_penalty_per_foot = torch.clamp(torch.square(delta_vz), max=delta_v_max_sq)
+        env.log_dict["feet_landing_speed_left"] = downward_speed[:, 0].mean().detach()
+        env.log_dict["feet_landing_speed_right"] = downward_speed[:, 1].mean().detach()
+        env.log_dict["feet_landing_speed_mean"] = downward_speed.mean().detach()
+        env.log_dict["feet_landing_speed_max"] = downward_speed.max().detach()
+        env.log_dict["feet_landing_speed_olaf_penalty_left"] = olaf_penalty_per_foot[:, 0].mean().detach()
+        env.log_dict["feet_landing_speed_olaf_penalty_right"] = olaf_penalty_per_foot[:, 1].mean().detach()
+        env.log_dict["feet_landing_speed_olaf_penalty_mean"] = olaf_penalty_per_foot.mean().detach()
+        env.log_dict["feet_landing_speed_olaf_penalty_max"] = olaf_penalty_per_foot.max().detach()
     return penalty
 
 
