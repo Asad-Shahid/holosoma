@@ -184,7 +184,26 @@ def penalty_feet_landing_speed_gated(
         env.log_dict["feet_landing_speed_mean"] = downward_speed.mean().detach()
         env.log_dict["feet_landing_speed_max"] = downward_speed.max().detach()
 
-    return penalty 
+    return penalty
+
+
+def penalty_feet_landing_speed_olaf(env: LeggedRobotLocomotionManager) -> torch.Tensor:
+    """Penalize sharp changes in vertical foot velocity."""
+    delta_v_max = 1.0
+    foot_vertical_vel = env.simulator._rigid_body_vel[:, env.feet_indices, 2]
+    buffer_name = "_olaf_prev_foot_vertical_vel"
+    if not hasattr(env, buffer_name):
+      setattr(env, buffer_name, foot_vertical_vel.clone())
+    prev_foot_vertical_vel = getattr(env, buffer_name)
+    delta_vz = foot_vertical_vel - prev_foot_vertical_vel
+    if hasattr(env, "episode_length_buf"):
+      delta_vz = torch.where((env.episode_length_buf > 1).unsqueeze(1),delta_vz,torch.zeros_like(delta_vz),)
+    delta_v_max_sq = float(delta_v_max) ** 2
+    penalty = torch.sum(torch.clamp(torch.square(delta_vz), max=delta_v_max_sq), dim=1)
+    prev_foot_vertical_vel.copy_(foot_vertical_vel)
+    return penalty
+
+
 # ================================================================================================
 # Limit Rewards
 # ================================================================================================
