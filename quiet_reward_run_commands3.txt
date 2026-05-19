@@ -43,7 +43,7 @@ python src/holosoma/holosoma/train_agent.py \
     --training.num-envs 4096 \
     --reward.terms.penalty-feet-landing-speed-olaf.weight=-10.00
 
-# 12.000 iteration : Gated 1.0
+# 12.000 iteration : Olaf 1.0
 python src/holosoma/holosoma/train_agent.py \
     exp:g1-23dof-fast-sac-quiet-olaf \
     simulator:isaacgym \
@@ -55,7 +55,7 @@ python src/holosoma/holosoma/train_agent.py \
     --logger.name 12_000_iteration_olaf_1.00 \
     --reward.terms.penalty-feet-landing-speed-olaf.weight=-1.00
 	
-# 12.000 iteration : Gated 5.0
+# 12.000 iteration : Olaf 5.0
 python src/holosoma/holosoma/train_agent.py \
     exp:g1-23dof-fast-sac-quiet-olaf \
     simulator:isaacgym \
@@ -67,7 +67,7 @@ python src/holosoma/holosoma/train_agent.py \
     --logger.name 12_000_iteration_olaf_5.00 \
     --reward.terms.penalty-feet-landing-speed-olaf.weight=-5.0
 
-# 12.000 iteration : Gated 10.0
+# 12.000 iteration Olaf 10.0
 python src/holosoma/holosoma/train_agent.py \
     exp:g1-23dof-fast-sac-quiet-olaf \
     simulator:isaacgym \
