@@ -14,9 +14,6 @@ from typing import Any
 
 import numpy as np
 
-FIXED_CHECKPOINT_STEP = 50000
-
-
 @dataclass(frozen=True)
 class CommandScenario:
     label: str
@@ -520,6 +517,8 @@ def _uses_penalty_scale_curriculum(command_text: str) -> bool:
 def _categorize_run(run_name: str, reward_term: str) -> str:
     if run_name == "basic_fast_sac":
         return "baseline"
+    if "olaf" in reward_term or "olaf" in run_name:
+        return "olaf"
     if "not-gated" in reward_term:
         return "not_gated"
     if "gated" in reward_term:
@@ -595,15 +594,8 @@ def _select_latest_checkpoint(run: Any) -> tuple[str, int]:
     if not checkpoint_candidates:
         raise ValueError(f"No checkpoint files matching 'model_<step>.pt' found for run '{run.id}'.")
 
-    for checkpoint_step, checkpoint_name in checkpoint_candidates:
-        if checkpoint_step == FIXED_CHECKPOINT_STEP:
-            return checkpoint_name, checkpoint_step
-
-    available_steps = ", ".join(str(step) for step, _ in sorted(checkpoint_candidates, key=lambda item: item[0]))
-    raise ValueError(
-        f"Run '{run.id}' does not contain a checkpoint at step {FIXED_CHECKPOINT_STEP}. "
-        f"Available steps: {available_steps}"
-    )
+    checkpoint_step, checkpoint_name = max(checkpoint_candidates, key=lambda item: item[0])
+    return checkpoint_name, checkpoint_step
 
 
 def _create_analysis_runtime(
@@ -735,19 +727,27 @@ def _evaluate_fast_sac_checkpoint(
     wrapped_env = algo.env
     policy = algo.get_inference_policy(device=algo.device)
 
+    command_tensor = torch.tensor(scenario.command, device=env.device, dtype=env.command_manager.commands.dtype)
     env.set_is_evaluating()
     obs = wrapped_env.reset()
-
-    command_tensor = torch.tensor(scenario.command, device=env.device, dtype=env.command_manager.commands.dtype)
-    env.command_manager.commands[:] = command_tensor.view(1, -1).expand_as(env.command_manager.commands)
+    obs = _apply_fixed_command_and_rebuild_actor_obs(
+        env=env,
+        wrapped_env=wrapped_env,
+        command_tensor=command_tensor,
+        torch=torch,
+    )
 
     touchdown_vz_samples: list[torch.Tensor] = []
     touchdown_fz_samples: list[torch.Tensor] = []
     contact_fz_samples: list[torch.Tensor] = []
+    foot_fz_all_samples: list[torch.Tensor] = []
     raw_tracking_lin_samples: list[torch.Tensor] = []
     raw_tracking_ang_samples: list[torch.Tensor] = []
+    lin_vel_samples: list[torch.Tensor] = []
+    yaw_rate_samples: list[torch.Tensor] = []
     lin_vel_error_trace: list[torch.Tensor] = []
     yaw_rate_error_trace: list[torch.Tensor] = []
+    foot_fz_all_trace: list[torch.Tensor] = []
     gravity_xy_trace: list[torch.Tensor] = []
     command_trace: list[torch.Tensor] = []
     done_count_trace: list[int] = []
@@ -759,7 +759,9 @@ def _evaluate_fast_sac_checkpoint(
 
     sample_count = env.num_envs * num_steps
     lin_vel_sq_error_sum = 0.0
+    lin_vel_error_sum = 0.0
     yaw_rate_sq_error_sum = 0.0
+    yaw_rate_error_sum = 0.0
     gravity_xy_norm_sum = 0.0
     fall_count = 0
     timeout_count = 0
@@ -767,9 +769,10 @@ def _evaluate_fast_sac_checkpoint(
 
     with torch.inference_mode():
         for _ in range(num_steps):
+            _apply_fixed_command(env=env, command_tensor=command_tensor)
             actions = policy({"actor_obs": obs})
             obs, _, dones, extras = wrapped_env.step(actions)
-            env.command_manager.commands[:] = command_tensor.view(1, -1).expand_as(env.command_manager.commands)
+            _apply_fixed_command(env=env, command_tensor=command_tensor)
 
             commands = env.command_manager.commands
             lin_vel = get_base_lin_vel(env)[:, :2]
@@ -779,14 +782,20 @@ def _evaluate_fast_sac_checkpoint(
             yaw_rate_error = torch.abs(commands[:, 2] - yaw_rate)
 
             lin_vel_sq_error_sum += torch.sum(torch.square(commands[:, :2] - lin_vel)).item()
+            lin_vel_error_sum += lin_vel_error.sum().item()
             yaw_rate_sq_error_sum += torch.sum(torch.square(commands[:, 2] - yaw_rate)).item()
+            yaw_rate_error_sum += yaw_rate_error.sum().item()
             gravity_xy_norm_sum += gravity_xy_norm.sum().item()
+            lin_vel_samples.append(lin_vel.detach().cpu())
+            yaw_rate_samples.append(yaw_rate.detach().cpu())
             lin_vel_error_trace.append(lin_vel_error.detach().cpu())
             yaw_rate_error_trace.append(yaw_rate_error.detach().cpu())
             gravity_xy_trace.append(gravity_xy_norm.detach().cpu())
             command_trace.append(commands[0].detach().cpu())
 
             contact_fz = torch.clamp(env.simulator.contact_forces[:, env.feet_indices, 2], min=0.0)
+            foot_fz_all_samples.append(contact_fz.reshape(-1).detach().cpu())
+            foot_fz_all_trace.append(contact_fz.detach().cpu())
             contact_now = contact_fz > contact_threshold
             touchdown_now = contact_now & ~prev_contact
             downward_speed = torch.clamp(-prev_foot_vz, min=0.0)
@@ -823,22 +832,30 @@ def _evaluate_fast_sac_checkpoint(
 
             prev_contact = contact_now.clone()
             prev_foot_vz = env.simulator._rigid_body_vel[:, env.feet_indices, 2].clone()
+            if done_mask.any():
+                fixed_obs = _rebuild_actor_obs_without_history_update(env=env, wrapped_env=wrapped_env, torch=torch)
+                obs[done_mask] = fixed_obs[done_mask]
 
     lin_vel_rmse = math.sqrt(lin_vel_sq_error_sum / max(sample_count, 1))
+    lin_vel_error_mean = lin_vel_error_sum / max(sample_count, 1)
     yaw_rate_rmse = math.sqrt(yaw_rate_sq_error_sum / max(sample_count, 1))
+    yaw_rate_error_mean = yaw_rate_error_sum / max(sample_count, 1)
     gravity_xy_mean = gravity_xy_norm_sum / max(sample_count, 1)
     mean_episode_length_s = float(env.average_episode_length) * float(env.dt)
 
     touchdown_vz_tensor = _concat_samples(touchdown_vz_samples)
     touchdown_fz_tensor = _concat_samples(touchdown_fz_samples)
     contact_fz_tensor = _concat_samples(contact_fz_samples)
+    foot_fz_all_tensor = _concat_samples(foot_fz_all_samples)
     raw_tracking_lin_tensor = _concat_samples(raw_tracking_lin_samples)
     raw_tracking_ang_tensor = _concat_samples(raw_tracking_ang_samples)
     metrics = {
         "num_envs": env.num_envs,
         "num_steps": num_steps,
         "lin_vel_rmse": lin_vel_rmse,
+        "lin_vel_error_mean": lin_vel_error_mean,
         "yaw_rate_rmse": yaw_rate_rmse,
+        "yaw_rate_error_mean": yaw_rate_error_mean,
         "gravity_xy_mean": gravity_xy_mean,
         "episode_count": episode_count,
         "fall_count": fall_count,
@@ -852,15 +869,21 @@ def _evaluate_fast_sac_checkpoint(
         "touchdown_fz_p95": _safe_quantile(touchdown_fz_tensor, 0.95),
         "contact_fz_mean": _safe_mean(contact_fz_tensor),
         "contact_fz_p95": _safe_quantile(contact_fz_tensor, 0.95),
+        "foot_fz_all_mean": _safe_mean(foot_fz_all_tensor),
+        "foot_fz_all_p95": _safe_quantile(foot_fz_all_tensor, 0.95),
         "raw_tracking_lin_mean": _safe_mean(raw_tracking_lin_tensor),
         "raw_tracking_ang_mean": _safe_mean(raw_tracking_ang_tensor),
     }
     arrays = {
         "command": np.asarray(scenario.command, dtype=np.float32),
         "command_trace": _stack_step_vectors(command_trace),
+        "lin_vel_xy": _stack_step_tensors(lin_vel_samples),
+        "yaw_rate": _stack_step_tensors(yaw_rate_samples),
         "lin_vel_error_trace": _stack_step_means(lin_vel_error_trace),
         "yaw_rate_error_trace": _stack_step_means(yaw_rate_error_trace),
         "gravity_xy_trace": _stack_step_means(gravity_xy_trace),
+        "foot_fz_all_trace": _stack_step_tensors(foot_fz_all_trace),
+        "foot_fz_all": _tensor_to_numpy(foot_fz_all_tensor),
         "touchdown_vz": _tensor_to_numpy(touchdown_vz_tensor),
         "touchdown_fz": _tensor_to_numpy(touchdown_fz_tensor),
         "contact_fz": _tensor_to_numpy(contact_fz_tensor),
@@ -871,6 +894,22 @@ def _evaluate_fast_sac_checkpoint(
         "fall_count_trace": np.asarray(fall_count_trace, dtype=np.int32),
     }
     return BenchmarkResult(metrics=metrics, arrays=arrays)
+
+
+def _apply_fixed_command_and_rebuild_actor_obs(*, env, wrapped_env, command_tensor, torch):
+    _apply_fixed_command(env=env, command_tensor=command_tensor)
+    return _rebuild_actor_obs_without_history_update(env=env, wrapped_env=wrapped_env, torch=torch)
+
+
+def _apply_fixed_command(*, env, command_tensor) -> None:
+    env.command_manager.commands[:] = command_tensor.view(1, -1).expand_as(env.command_manager.commands)
+
+
+def _rebuild_actor_obs_without_history_update(*, env, wrapped_env, torch):
+    obs_dict = env.observation_manager.compute(modify_history=False)
+    clip_limit = env.observation_manager.cfg.clip_observations
+    actor_obs_keys = getattr(wrapped_env, "_actor_obs_keys")
+    return torch.cat([torch.clip(obs_dict[key], -clip_limit, clip_limit) for key in actor_obs_keys], dim=1)
 
 
 def _save_benchmark_arrays(
@@ -1023,7 +1062,11 @@ def _plot_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) 
 
         for axis, scenario_name in zip(axes.flatten(), scenario_names):
             scenario_rows = [row for row in results if row["scenario"] == scenario_name]
-            for category, color in (("not_gated", "tab:blue"), ("gated", "tab:orange")):
+            for category, color in (
+                ("not_gated", "tab:blue"),
+                ("gated", "tab:orange"),
+                ("olaf", "tab:red"),
+            ):
                 category_rows = sorted(
                     (row for row in scenario_rows if row["category"] == category),
                     key=_plot_weight_value,
@@ -1128,6 +1171,12 @@ def _stack_step_vectors(samples) -> np.ndarray:
     return np.stack([sample.numpy() for sample in samples]).astype(np.float32)
 
 
+def _stack_step_tensors(samples) -> np.ndarray:
+    if not samples:
+        return np.empty(0, dtype=np.float32)
+    return np.stack([sample.numpy() for sample in samples]).astype(np.float32)
+
+
 def _tensor_to_numpy(values) -> np.ndarray:
     if values.numel() == 0:
         return np.empty(0, dtype=np.float32)
@@ -1145,12 +1194,16 @@ def _metric_names_for_plots() -> list[str]:
         "yaw_rate_rmse",
         "fall_rate",
         "mean_episode_length_s",
+        "lin_vel_error_mean",
+        "yaw_rate_error_mean",
         "touchdown_vz_mean",
         "touchdown_vz_p95",
         "touchdown_fz_mean",
         "touchdown_fz_p95",
         "contact_fz_mean",
         "contact_fz_p95",
+        "foot_fz_all_mean",
+        "foot_fz_all_p95",
     ]
 
 

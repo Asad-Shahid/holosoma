@@ -1,8 +1,11 @@
 # Commands for the runs
-# 3 runs
-# 1 run with olaf and weight of -1.0
-# 1 run with olaf and weight of -5.0
-# 1 run with olaf and weight of -10.0
+# 6 runs
+# 1 run with olaf from scratch and weight of -1.0
+# 1 run with olaf from scratch and weight of -5.0
+# 1 run with olaf from scratch and weight of -10.0
+# 1 run with olaf from 12k and weight of -1.0
+# 1 run with olaf from 12k and weight of -5.0
+# 1 run with olaf from 12k and weight of -10.0
 
 # Start : Olaf 1.0
 python src/holosoma/holosoma/train_agent.py \
