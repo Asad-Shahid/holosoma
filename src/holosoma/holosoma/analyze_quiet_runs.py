@@ -135,9 +135,11 @@ def resolve_wandb_runs(
     project: str,
     specs: list[RunSpec],
     include_run_names: set[str] | None = None,
+    checkpoint_name_overrides: dict[str, str] | None = None,
 ) -> list[ResolvedRun]:
     import wandb
 
+    checkpoint_name_overrides = checkpoint_name_overrides or {}
     requested_specs = [
         spec for spec in specs if include_run_names is None or spec.run_name in include_run_names
     ]
@@ -165,7 +167,11 @@ def resolve_wandb_runs(
     resolved_runs: list[ResolvedRun] = []
     for spec in requested_specs:
         run = name_to_run[spec.run_name]
-        checkpoint_name, checkpoint_step = _select_latest_checkpoint(run)
+        if spec.run_name in checkpoint_name_overrides:
+            checkpoint_name = checkpoint_name_overrides[spec.run_name]
+            checkpoint_step = _checkpoint_step_from_name(checkpoint_name)
+        else:
+            checkpoint_name, checkpoint_step = _select_latest_checkpoint(run)
         penalty_scale_history = (
             _fetch_penalty_scale_history(run) if spec.uses_penalty_scale_curriculum else ()
         )
@@ -348,6 +354,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional exact run name filter. Can be passed multiple times.",
     )
     parser.add_argument(
+        "--checkpoint-name",
+        action="append",
+        default=None,
+        help=(
+            "Checkpoint file to evaluate. Use 'model_<step>.pt' when evaluating exactly one run, "
+            "or '<run_name>=model_<step>.pt' when evaluating multiple runs. Can be passed multiple times."
+        ),
+    )
+    parser.add_argument(
         "--scenario",
         action="append",
         default=None,
@@ -394,11 +409,17 @@ def main() -> None:
     scenarios = parse_command_scenarios(args.scenario)
     specs = parse_quiet_reward_commands_file(args.manifest)
     include_run_names = set(args.include_run_name) if args.include_run_name else None
+    checkpoint_name_overrides = parse_checkpoint_name_overrides(
+        args.checkpoint_name,
+        specs=specs,
+        include_run_names=include_run_names,
+    )
     resolved_runs = resolve_wandb_runs(
         entity=args.wandb_entity,
         project=args.wandb_project,
         specs=specs,
         include_run_names=include_run_names,
+        checkpoint_name_overrides=checkpoint_name_overrides,
     )
 
     output_dir = Path(args.output_dir)
@@ -582,10 +603,81 @@ def _optional_int(value: Any) -> int | None:
     return int(numeric_value) if numeric_value is not None else None
 
 
+def parse_checkpoint_name_overrides(
+    values: list[str] | None,
+    *,
+    specs: list[RunSpec],
+    include_run_names: set[str] | None,
+) -> dict[str, str]:
+    if not values:
+        return {}
+
+    requested_specs = [
+        spec for spec in specs if include_run_names is None or spec.run_name in include_run_names
+    ]
+    requested_names = {spec.run_name for spec in requested_specs}
+    overrides: dict[str, str] = {}
+
+    for raw_value in values:
+        if "=" in raw_value:
+            run_name, checkpoint_name = raw_value.split("=", 1)
+            run_name = run_name.strip()
+            checkpoint_name = checkpoint_name.strip()
+        else:
+            if len(requested_names) != 1:
+                raise ValueError(
+                    "Bare --checkpoint-name can only be used when exactly one run is selected. "
+                    "Use '<run_name>=model_<step>.pt' for multiple runs."
+                )
+            run_name = next(iter(requested_names))
+            checkpoint_name = raw_value.strip()
+
+        if run_name not in requested_names:
+            raise ValueError(f"--checkpoint-name references a run that is not selected: {run_name}")
+        _checkpoint_step_from_name(checkpoint_name)
+        overrides[run_name] = checkpoint_name
+
+    return overrides
+
+
+def _checkpoint_step_from_name(checkpoint_name: str) -> int:
+    match = re.match(r"model_(\d+)\.pt$", Path(checkpoint_name).name)
+    if not match:
+        raise ValueError(
+            f"Invalid checkpoint name '{checkpoint_name}'. Expected a file named 'model_<step>.pt'."
+        )
+    return int(match.group(1))
+
+
 def _select_latest_checkpoint(run: Any) -> tuple[str, int]:
     checkpoint_candidates: list[tuple[int, str]] = []
 
-    for file_obj in run.files():
+    try:
+        run_files = run.files()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not list checkpoint files for W&B run '{run.id}'. "
+            "Pass --checkpoint-name model_<step>.pt to evaluate a known checkpoint directly."
+        ) from exc
+
+    try:
+        file_iterator = iter(run_files)
+    except TypeError as exc:
+        raise RuntimeError(
+            f"Could not list checkpoint files for W&B run '{run.id}'. "
+            "Pass --checkpoint-name model_<step>.pt to evaluate a known checkpoint directly."
+        ) from exc
+
+    while True:
+        try:
+            file_obj = next(file_iterator)
+        except StopIteration:
+            break
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not list checkpoint files for W&B run '{run.id}'. "
+                "Pass --checkpoint-name model_<step>.pt to evaluate a known checkpoint directly."
+            ) from exc
         file_name = file_obj.name
         match = re.match(r"model_(\d+)\.pt$", Path(file_name).name)
         if match:
