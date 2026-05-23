@@ -64,6 +64,7 @@ class AnalysisRuntime:
     env: Any
     device: str
     simulation_app: Any
+    randomization_report: dict[str, Any]
     algo: Any | None = None
 
 
@@ -194,7 +195,7 @@ def run_analysis(
     output_dir: Path,
     *,
     num_envs: int,
-    num_steps: int,
+    num_steps: int | None,
     episode_length_s: float,
     contact_threshold: float,
     headless: bool,
@@ -220,6 +221,10 @@ def run_analysis(
                     headless=headless,
                 )
 
+            resolved_num_steps = num_steps
+            if resolved_num_steps is None:
+                resolved_num_steps = int(round(episode_length_s / float(runtime.env.dt)))
+
             algo = _load_algo_for_runtime(
                 runtime=runtime,
                 checkpoint_uri=resolved_run.checkpoint_uri,
@@ -230,7 +235,7 @@ def run_analysis(
                 benchmark_result = _evaluate_fast_sac_checkpoint(
                     algo=algo,
                     scenario=scenario,
-                    num_steps=num_steps,
+                    num_steps=resolved_num_steps,
                     contact_threshold=contact_threshold,
                 )
                 scenario_metrics = benchmark_result.metrics
@@ -253,6 +258,18 @@ def run_analysis(
                     "command_x": scenario.command[0],
                     "command_y": scenario.command[1],
                     "command_yaw": scenario.command[2],
+                    "physics_randomization_configured": runtime.randomization_report[
+                        "physics_randomization_configured"
+                    ],
+                    "physics_randomization_detected_across_envs": runtime.randomization_report[
+                        "physics_randomization_detected_across_envs"
+                    ],
+                    "detected_physics_variation_fields": runtime.randomization_report[
+                        "detected_physics_variation_fields"
+                    ],
+                    "physics_randomization_terms": runtime.randomization_report["physics_randomization_terms"],
+                    "randomization_setup_terms": runtime.randomization_report["setup_terms"],
+                    "randomization_reset_terms": runtime.randomization_report["reset_terms"],
                 }
                 result_row.update(scenario_metrics)
                 results.append(result_row)
@@ -369,7 +386,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Evaluation command scenario in the format '<label>:vx,vy,yaw'. Can be passed multiple times.",
     )
     parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel environments for evaluation.")
-    parser.add_argument("--num-steps", type=int, default=2000, help="Number of control steps per scenario.")
+    parser.add_argument(
+        "--num-steps",
+        type=int,
+        default=None,
+        help=(
+            "Number of policy/control steps per scenario. Defaults to episode-length-s / policy_dt."
+        ),
+    )
     parser.add_argument(
         "--episode-length-s",
         type=float,
@@ -405,6 +429,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
+    if args.num_steps is not None and args.num_steps <= 0:
+        parser.error("--num-steps must be greater than zero when provided.")
 
     scenarios = parse_command_scenarios(args.scenario)
     specs = parse_quiet_reward_commands_file(args.manifest)
@@ -711,11 +737,20 @@ def _create_analysis_runtime(
         headless=headless,
     )
     env, device, simulation_app = setup_simulation_environment(analysis_cfg)
+    randomization_report = _physics_randomization_report(env)
+    logger = _get_logger()
+    logger.info(
+        "Physics randomization configured=%s, detected_across_envs=%s, terms=%s",
+        randomization_report["physics_randomization_configured"],
+        randomization_report["physics_randomization_detected_across_envs"],
+        randomization_report["physics_randomization_terms"],
+    )
     return AnalysisRuntime(
         analysis_cfg=analysis_cfg,
         env=env,
         device=device,
         simulation_app=simulation_app,
+        randomization_report=randomization_report,
     )
 
 
@@ -756,7 +791,13 @@ def _load_algo_for_runtime(
     return algo
 
 
-def _build_analysis_config(saved_cfg, *, num_envs: int, episode_length_s: float, headless: bool):
+def _build_analysis_config(
+    saved_cfg,
+    *,
+    num_envs: int,
+    episode_length_s: float,
+    headless: bool,
+):
     import holosoma.config_values.logger
 
     spawn_cfg = dataclasses.replace(
@@ -822,6 +863,7 @@ def _evaluate_fast_sac_checkpoint(
     command_tensor = torch.tensor(scenario.command, device=env.device, dtype=env.command_manager.commands.dtype)
     env.set_is_evaluating()
     obs = wrapped_env.reset()
+    _reset_locomotion_to_default_pose(env=env, torch=torch)
     obs = _apply_fixed_command_and_rebuild_actor_obs(
         env=env,
         wrapped_env=wrapped_env,
@@ -831,72 +873,152 @@ def _evaluate_fast_sac_checkpoint(
 
     touchdown_vz_samples: list[torch.Tensor] = []
     touchdown_fz_samples: list[torch.Tensor] = []
+    touchdown_vz_left_samples: list[torch.Tensor] = []
+    touchdown_vz_right_samples: list[torch.Tensor] = []
+    touchdown_fz_left_samples: list[torch.Tensor] = []
+    touchdown_fz_right_samples: list[torch.Tensor] = []
     contact_fz_samples: list[torch.Tensor] = []
     foot_fz_all_samples: list[torch.Tensor] = []
-    raw_tracking_lin_samples: list[torch.Tensor] = []
-    raw_tracking_ang_samples: list[torch.Tensor] = []
-    lin_vel_samples: list[torch.Tensor] = []
-    yaw_rate_samples: list[torch.Tensor] = []
-    lin_vel_error_trace: list[torch.Tensor] = []
-    yaw_rate_error_trace: list[torch.Tensor] = []
-    foot_fz_all_trace: list[torch.Tensor] = []
-    gravity_xy_trace: list[torch.Tensor] = []
-    command_trace: list[torch.Tensor] = []
-    done_count_trace: list[int] = []
-    timeout_count_trace: list[int] = []
-    fall_count_trace: list[int] = []
+    touchdown_vz_trace_env: list[torch.Tensor] = []
+    touchdown_fz_trace_env: list[torch.Tensor] = []
+    lin_vel_error_trace_env: list[torch.Tensor] = []
+    yaw_rate_error_trace_env: list[torch.Tensor] = []
+    gravity_xy_trace_env: list[torch.Tensor] = []
+    raw_tracking_lin_trace_env: list[torch.Tensor] = []
+    raw_tracking_ang_trace_env: list[torch.Tensor] = []
+    foot_fz_mean_trace_env: list[torch.Tensor] = []
 
     prev_contact = env.simulator.contact_forces[:, env.feet_indices, 2] > contact_threshold
     prev_foot_vz = env.simulator._rigid_body_vel[:, env.feet_indices, 2].clone()
+    tracking_lin_sigma = _reward_term_param(env, "tracking_lin_vel", "tracking_sigma", 0.25)
+    tracking_ang_sigma = _reward_term_param(env, "tracking_ang_vel", "tracking_sigma", 0.25)
 
-    sample_count = env.num_envs * num_steps
-    lin_vel_sq_error_sum = 0.0
-    lin_vel_error_sum = 0.0
-    yaw_rate_sq_error_sum = 0.0
-    yaw_rate_error_sum = 0.0
-    gravity_xy_norm_sum = 0.0
-    fall_count = 0
-    timeout_count = 0
-    episode_count = 0
+    lin_vel_sq_error_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    lin_vel_error_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    yaw_rate_sq_error_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    yaw_rate_error_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    gravity_xy_norm_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    raw_tracking_lin_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    raw_tracking_ang_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    touchdown_vz_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    touchdown_fz_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    touchdown_count_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    recording_step_count = 0
+    fall_event_count = 0
+    timeout_event_count = 0
+    done_event_count = 0
+    fell_env_mask = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    terminal_recorded_mask = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    terminal_step_counts = torch.full(
+        (env.num_envs,),
+        int(num_steps),
+        device=env.device,
+        dtype=torch.float32,
+    )
+    if env.feet_indices.numel() < 2:
+        raise ValueError(f"Expected at least two feet for left/right analysis, got {env.feet_indices.numel()}.")
 
     with torch.inference_mode():
-        for _ in range(num_steps):
+        for step_idx in range(num_steps):
             _apply_fixed_command(env=env, command_tensor=command_tensor)
             actions = policy({"actor_obs": obs})
-            obs, _, dones, extras = wrapped_env.step(actions)
+            env._pre_physics_step(actions)
+            env.render()
+
+            for _ in range(env.simulator.simulator_config.sim.control_decimation):
+                env._apply_force_in_physics_step()
+                env.simulator.simulate_at_each_physics_step()
+                env.simulator.refresh_sim_tensors()
+                env._pre_compute_observations_callback()
+                _apply_fixed_command(env=env, command_tensor=command_tensor)
+
+                commands = env.command_manager.commands
+                lin_vel = get_base_lin_vel(env)[:, :2]
+                yaw_rate = get_base_ang_vel(env)[:, 2]
+                gravity_xy_norm = torch.linalg.norm(get_projected_gravity(env)[:, :2], dim=1)
+                lin_vel_error = torch.linalg.norm(commands[:, :2] - lin_vel, dim=1)
+                yaw_rate_error = torch.abs(commands[:, 2] - yaw_rate)
+                lin_vel_sq_error = torch.sum(torch.square(commands[:, :2] - lin_vel), dim=1)
+                yaw_rate_sq_error = torch.square(commands[:, 2] - yaw_rate)
+                raw_tracking_lin = torch.exp(-lin_vel_sq_error / tracking_lin_sigma)
+                raw_tracking_ang = torch.exp(-yaw_rate_sq_error / tracking_ang_sigma)
+                lin_vel_sq_error_sum_env += lin_vel_sq_error
+                lin_vel_error_sum_env += lin_vel_error
+                yaw_rate_sq_error_sum_env += yaw_rate_sq_error
+                yaw_rate_error_sum_env += yaw_rate_error
+                gravity_xy_norm_sum_env += gravity_xy_norm
+                raw_tracking_lin_sum_env += raw_tracking_lin
+                raw_tracking_ang_sum_env += raw_tracking_ang
+                lin_vel_error_trace_env.append(lin_vel_error.detach().cpu())
+                yaw_rate_error_trace_env.append(yaw_rate_error.detach().cpu())
+                gravity_xy_trace_env.append(gravity_xy_norm.detach().cpu())
+                raw_tracking_lin_trace_env.append(raw_tracking_lin.detach().cpu())
+                raw_tracking_ang_trace_env.append(raw_tracking_ang.detach().cpu())
+                recording_step_count += 1
+
+                contact_fz = torch.clamp(env.simulator.contact_forces[:, env.feet_indices, 2], min=0.0)
+                foot_fz_all_samples.append(contact_fz.reshape(-1).detach().cpu())
+                foot_fz_mean_trace_env.append(contact_fz.mean(dim=1).detach().cpu())
+                contact_now = contact_fz > contact_threshold
+                touchdown_now = contact_now & ~prev_contact
+                downward_speed = torch.clamp(-prev_foot_vz, min=0.0)
+                touchdown_vz_by_env = torch.full(
+                    (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
+                )
+                touchdown_fz_by_env = torch.full(
+                    (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
+                )
+
+                if touchdown_now.any():
+                    touchdown_env_ids, _touchdown_foot_ids = touchdown_now.nonzero(as_tuple=True)
+                    touchdown_vz_values = downward_speed[touchdown_env_ids, _touchdown_foot_ids]
+                    touchdown_fz_values = contact_fz[touchdown_env_ids, _touchdown_foot_ids]
+                    touchdown_vz_step = touchdown_vz_values.detach().cpu()
+                    touchdown_fz_step = touchdown_fz_values.detach().cpu()
+                    touchdown_vz_samples.append(touchdown_vz_step)
+                    touchdown_fz_samples.append(touchdown_fz_step)
+                    ones = torch.ones_like(touchdown_vz_values, dtype=torch.float32)
+                    touchdown_vz_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_vz_values)
+                    touchdown_fz_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_fz_values)
+                    touchdown_count_env.scatter_add_(0, touchdown_env_ids, ones)
+                    touchdown_vz_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+                    touchdown_fz_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+                    touchdown_step_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+                    touchdown_vz_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_vz_values)
+                    touchdown_fz_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_fz_values)
+                    touchdown_step_count.scatter_add_(0, touchdown_env_ids, ones)
+                    touchdown_has_sample = touchdown_step_count > 0
+                    touchdown_vz_by_env[touchdown_has_sample] = (
+                        touchdown_vz_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
+                    )
+                    touchdown_fz_by_env[touchdown_has_sample] = (
+                        touchdown_fz_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
+                    )
+                touchdown_vz_trace_env.append(touchdown_vz_by_env.detach().cpu())
+                touchdown_fz_trace_env.append(touchdown_fz_by_env.detach().cpu())
+                touchdown_left = touchdown_now[:, 0]
+                touchdown_right = touchdown_now[:, 1]
+                if touchdown_left.any():
+                    touchdown_vz_left_step = downward_speed[:, 0][touchdown_left].detach().cpu()
+                    touchdown_fz_left_step = contact_fz[:, 0][touchdown_left].detach().cpu()
+                    touchdown_vz_left_samples.append(touchdown_vz_left_step)
+                    touchdown_fz_left_samples.append(touchdown_fz_left_step)
+                if touchdown_right.any():
+                    touchdown_vz_right_step = downward_speed[:, 1][touchdown_right].detach().cpu()
+                    touchdown_fz_right_step = contact_fz[:, 1][touchdown_right].detach().cpu()
+                    touchdown_vz_right_samples.append(touchdown_vz_right_step)
+                    touchdown_fz_right_samples.append(touchdown_fz_right_step)
+                if contact_now.any():
+                    contact_fz_samples.append(contact_fz[contact_now].detach().cpu())
+
+                prev_contact = contact_now.clone()
+                prev_foot_vz = env.simulator._rigid_body_vel[:, env.feet_indices, 2].clone()
+
+            env._post_physics_step()
             _apply_fixed_command(env=env, command_tensor=command_tensor)
-
-            commands = env.command_manager.commands
-            lin_vel = get_base_lin_vel(env)[:, :2]
-            yaw_rate = get_base_ang_vel(env)[:, 2]
-            gravity_xy_norm = torch.linalg.norm(get_projected_gravity(env)[:, :2], dim=1)
-            lin_vel_error = torch.linalg.norm(commands[:, :2] - lin_vel, dim=1)
-            yaw_rate_error = torch.abs(commands[:, 2] - yaw_rate)
-
-            lin_vel_sq_error_sum += torch.sum(torch.square(commands[:, :2] - lin_vel)).item()
-            lin_vel_error_sum += lin_vel_error.sum().item()
-            yaw_rate_sq_error_sum += torch.sum(torch.square(commands[:, 2] - yaw_rate)).item()
-            yaw_rate_error_sum += yaw_rate_error.sum().item()
-            gravity_xy_norm_sum += gravity_xy_norm.sum().item()
-            lin_vel_samples.append(lin_vel.detach().cpu())
-            yaw_rate_samples.append(yaw_rate.detach().cpu())
-            lin_vel_error_trace.append(lin_vel_error.detach().cpu())
-            yaw_rate_error_trace.append(yaw_rate_error.detach().cpu())
-            gravity_xy_trace.append(gravity_xy_norm.detach().cpu())
-            command_trace.append(commands[0].detach().cpu())
-
-            contact_fz = torch.clamp(env.simulator.contact_forces[:, env.feet_indices, 2], min=0.0)
-            foot_fz_all_samples.append(contact_fz.reshape(-1).detach().cpu())
-            foot_fz_all_trace.append(contact_fz.detach().cpu())
-            contact_now = contact_fz > contact_threshold
-            touchdown_now = contact_now & ~prev_contact
-            downward_speed = torch.clamp(-prev_foot_vz, min=0.0)
-
-            if touchdown_now.any():
-                touchdown_vz_samples.append(downward_speed[touchdown_now].detach().cpu())
-                touchdown_fz_samples.append(contact_fz[touchdown_now].detach().cpu())
-            if contact_now.any():
-                contact_fz_samples.append(contact_fz[contact_now].detach().cpu())
+            obs = _actor_obs_from_env_obs_dict(env=env, wrapped_env=wrapped_env, torch=torch)
+            dones = env.reset_buf
+            extras = env.extras
 
             done_mask = dones.bool()
             if done_mask.any():
@@ -905,87 +1027,230 @@ def _evaluate_fast_sac_checkpoint(
                 fall_events = int(fall_mask.sum().item())
                 timeout_events = int((done_mask & timeout_mask).sum().item())
                 done_events = int(done_mask.sum().item())
-                fall_count += fall_events
-                timeout_count += timeout_events
-                episode_count += done_events
+                fall_event_count += fall_events
+                timeout_event_count += timeout_events
+                done_event_count += done_events
+                fell_env_mask |= fall_mask
 
-                raw_episode = extras.get("raw_episode", {})
-                if "raw_rew_tracking_lin_vel" in raw_episode:
-                    raw_tracking_lin_samples.append(raw_episode["raw_rew_tracking_lin_vel"].detach().cpu())
-                if "raw_rew_tracking_ang_vel" in raw_episode:
-                    raw_tracking_ang_samples.append(raw_episode["raw_rew_tracking_ang_vel"].detach().cpu())
-                done_count_trace.append(done_events)
-                timeout_count_trace.append(timeout_events)
-                fall_count_trace.append(fall_events)
-            else:
-                done_count_trace.append(0)
-                timeout_count_trace.append(0)
-                fall_count_trace.append(0)
+                completed_lengths = getattr(env, "_pending_episode_lengths", None)
+                if completed_lengths is None:
+                    done_step_counts = torch.full_like(terminal_step_counts, float(step_idx + 1))
+                else:
+                    done_step_counts = completed_lengths.to(device=env.device, dtype=torch.float32)
+                    fallback_step_counts = torch.full_like(done_step_counts, float(step_idx + 1))
+                    done_step_counts = torch.where(done_step_counts > 0.0, done_step_counts, fallback_step_counts)
+                newly_terminal = done_mask & ~terminal_recorded_mask
+                terminal_step_counts[newly_terminal] = done_step_counts[newly_terminal]
+                terminal_recorded_mask |= newly_terminal
 
-            prev_contact = contact_now.clone()
-            prev_foot_vz = env.simulator._rigid_body_vel[:, env.feet_indices, 2].clone()
             if done_mask.any():
+                reset_env_ids = done_mask.nonzero(as_tuple=False).flatten()
+                _reset_locomotion_to_default_pose(env=env, torch=torch, env_ids=reset_env_ids)
                 fixed_obs = _rebuild_actor_obs_without_history_update(env=env, wrapped_env=wrapped_env, torch=torch)
                 obs[done_mask] = fixed_obs[done_mask]
+                prev_contact[done_mask] = (
+                    env.simulator.contact_forces[done_mask][:, env.feet_indices, 2] > contact_threshold
+                )
+                prev_foot_vz[done_mask] = env.simulator._rigid_body_vel[done_mask][:, env.feet_indices, 2]
 
-    lin_vel_rmse = math.sqrt(lin_vel_sq_error_sum / max(sample_count, 1))
-    lin_vel_error_mean = lin_vel_error_sum / max(sample_count, 1)
-    yaw_rate_rmse = math.sqrt(yaw_rate_sq_error_sum / max(sample_count, 1))
-    yaw_rate_error_mean = yaw_rate_error_sum / max(sample_count, 1)
-    gravity_xy_mean = gravity_xy_norm_sum / max(sample_count, 1)
-    mean_episode_length_s = float(env.average_episode_length) * float(env.dt)
+    env_sample_count = max(recording_step_count, 1)
+    per_env_lin_vel_rmse = torch.sqrt(lin_vel_sq_error_sum_env / env_sample_count)
+    per_env_lin_vel_error_mean = lin_vel_error_sum_env / env_sample_count
+    per_env_yaw_rate_rmse = torch.sqrt(yaw_rate_sq_error_sum_env / env_sample_count)
+    per_env_yaw_rate_error_mean = yaw_rate_error_sum_env / env_sample_count
+    per_env_gravity_xy_mean = gravity_xy_norm_sum_env / env_sample_count
+    per_env_raw_tracking_lin_mean = raw_tracking_lin_sum_env / env_sample_count
+    per_env_raw_tracking_ang_mean = raw_tracking_ang_sum_env / env_sample_count
+    per_env_touchdown_vz_mean = torch.full(
+        (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
+    )
+    per_env_touchdown_fz_mean = torch.full(
+        (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
+    )
+    touchdown_env_mask = touchdown_count_env > 0
+    per_env_touchdown_vz_mean[touchdown_env_mask] = (
+        touchdown_vz_sum_env[touchdown_env_mask] / touchdown_count_env[touchdown_env_mask]
+    )
+    per_env_touchdown_fz_mean[touchdown_env_mask] = (
+        touchdown_fz_sum_env[touchdown_env_mask] / touchdown_count_env[touchdown_env_mask]
+    )
+
+    lin_vel_rmse = _safe_mean(per_env_lin_vel_rmse)
+    lin_vel_error_mean = _safe_mean(per_env_lin_vel_error_mean)
+    yaw_rate_rmse = _safe_mean(per_env_yaw_rate_rmse)
+    yaw_rate_error_mean = _safe_mean(per_env_yaw_rate_error_mean)
+    gravity_xy_mean = _safe_mean(per_env_gravity_xy_mean)
+    raw_tracking_lin_mean = _safe_mean(per_env_raw_tracking_lin_mean)
+    raw_tracking_ang_mean = _safe_mean(per_env_raw_tracking_ang_mean)
+    episode_count = env.num_envs
+    fall_count = int(fell_env_mask.sum().item())
+    timeout_count = max(int(env.num_envs) - fall_count, 0)
+    mean_episode_length_s = float(terminal_step_counts.mean().item()) * float(env.dt)
 
     touchdown_vz_tensor = _concat_samples(touchdown_vz_samples)
     touchdown_fz_tensor = _concat_samples(touchdown_fz_samples)
+    touchdown_vz_left_tensor = _concat_samples(touchdown_vz_left_samples)
+    touchdown_vz_right_tensor = _concat_samples(touchdown_vz_right_samples)
+    touchdown_fz_left_tensor = _concat_samples(touchdown_fz_left_samples)
+    touchdown_fz_right_tensor = _concat_samples(touchdown_fz_right_samples)
     contact_fz_tensor = _concat_samples(contact_fz_samples)
     foot_fz_all_tensor = _concat_samples(foot_fz_all_samples)
-    raw_tracking_lin_tensor = _concat_samples(raw_tracking_lin_samples)
-    raw_tracking_ang_tensor = _concat_samples(raw_tracking_ang_samples)
+    touchdown_vz_trace_env_np = _stack_step_tensors(touchdown_vz_trace_env)
+    touchdown_fz_trace_env_np = _stack_step_tensors(touchdown_fz_trace_env)
+    lin_vel_error_trace_env_np = _stack_step_tensors(lin_vel_error_trace_env)
+    yaw_rate_error_trace_env_np = _stack_step_tensors(yaw_rate_error_trace_env)
+    gravity_xy_trace_env_np = _stack_step_tensors(gravity_xy_trace_env)
+    raw_tracking_lin_trace_env_np = _stack_step_tensors(raw_tracking_lin_trace_env)
+    raw_tracking_ang_trace_env_np = _stack_step_tensors(raw_tracking_ang_trace_env)
+    foot_fz_mean_trace_env_np = _stack_step_tensors(foot_fz_mean_trace_env)
     metrics = {
         "num_envs": env.num_envs,
         "num_steps": num_steps,
+        "num_recording_steps": recording_step_count,
         "lin_vel_rmse": lin_vel_rmse,
+        "lin_vel_rmse_var": _safe_var(per_env_lin_vel_rmse),
+        "lin_vel_rmse_std": _safe_std(per_env_lin_vel_rmse),
         "lin_vel_error_mean": lin_vel_error_mean,
+        "lin_vel_error_mean_var": _safe_var(per_env_lin_vel_error_mean),
+        "lin_vel_error_mean_std": _safe_std(per_env_lin_vel_error_mean),
         "yaw_rate_rmse": yaw_rate_rmse,
+        "yaw_rate_rmse_var": _safe_var(per_env_yaw_rate_rmse),
+        "yaw_rate_rmse_std": _safe_std(per_env_yaw_rate_rmse),
         "yaw_rate_error_mean": yaw_rate_error_mean,
+        "yaw_rate_error_mean_var": _safe_var(per_env_yaw_rate_error_mean),
+        "yaw_rate_error_mean_std": _safe_std(per_env_yaw_rate_error_mean),
         "gravity_xy_mean": gravity_xy_mean,
+        "gravity_xy_mean_var": _safe_var(per_env_gravity_xy_mean),
+        "gravity_xy_mean_std": _safe_std(per_env_gravity_xy_mean),
         "episode_count": episode_count,
         "fall_count": fall_count,
         "timeout_count": timeout_count,
+        "fall_event_count": fall_event_count,
+        "timeout_event_count": timeout_event_count,
+        "done_event_count": done_event_count,
         "fall_rate": (fall_count / episode_count) if episode_count else float("nan"),
         "mean_episode_length_s": mean_episode_length_s,
         "touchdown_count": int(touchdown_vz_tensor.numel()),
+        "touchdown_left_count": int(touchdown_vz_left_tensor.numel()),
+        "touchdown_right_count": int(touchdown_vz_right_tensor.numel()),
         "touchdown_vz_mean": _safe_mean(touchdown_vz_tensor),
+        "touchdown_vz_mean_across_envs": _safe_nanmean(per_env_touchdown_vz_mean),
+        "touchdown_vz_mean_var_across_envs": _safe_nanvar(per_env_touchdown_vz_mean),
+        "touchdown_vz_mean_std_across_envs": _safe_nanstd(per_env_touchdown_vz_mean),
         "touchdown_vz_p95": _safe_quantile(touchdown_vz_tensor, 0.95),
+        "touchdown_vz_left_mean": _safe_mean(touchdown_vz_left_tensor),
+        "touchdown_vz_left_p95": _safe_quantile(touchdown_vz_left_tensor, 0.95),
+        "touchdown_vz_right_mean": _safe_mean(touchdown_vz_right_tensor),
+        "touchdown_vz_right_p95": _safe_quantile(touchdown_vz_right_tensor, 0.95),
         "touchdown_fz_mean": _safe_mean(touchdown_fz_tensor),
+        "touchdown_fz_mean_across_envs": _safe_nanmean(per_env_touchdown_fz_mean),
+        "touchdown_fz_mean_var_across_envs": _safe_nanvar(per_env_touchdown_fz_mean),
+        "touchdown_fz_mean_std_across_envs": _safe_nanstd(per_env_touchdown_fz_mean),
         "touchdown_fz_p95": _safe_quantile(touchdown_fz_tensor, 0.95),
+        "touchdown_fz_left_mean": _safe_mean(touchdown_fz_left_tensor),
+        "touchdown_fz_left_p95": _safe_quantile(touchdown_fz_left_tensor, 0.95),
+        "touchdown_fz_right_mean": _safe_mean(touchdown_fz_right_tensor),
+        "touchdown_fz_right_p95": _safe_quantile(touchdown_fz_right_tensor, 0.95),
         "contact_fz_mean": _safe_mean(contact_fz_tensor),
         "contact_fz_p95": _safe_quantile(contact_fz_tensor, 0.95),
         "foot_fz_all_mean": _safe_mean(foot_fz_all_tensor),
         "foot_fz_all_p95": _safe_quantile(foot_fz_all_tensor, 0.95),
-        "raw_tracking_lin_mean": _safe_mean(raw_tracking_lin_tensor),
-        "raw_tracking_ang_mean": _safe_mean(raw_tracking_ang_tensor),
+        "raw_tracking_lin_mean": raw_tracking_lin_mean,
+        "raw_tracking_lin_mean_var": _safe_var(per_env_raw_tracking_lin_mean),
+        "raw_tracking_lin_mean_std": _safe_std(per_env_raw_tracking_lin_mean),
+        "raw_tracking_ang_mean": raw_tracking_ang_mean,
+        "raw_tracking_ang_mean_var": _safe_var(per_env_raw_tracking_ang_mean),
+        "raw_tracking_ang_mean_std": _safe_std(per_env_raw_tracking_ang_mean),
+        "analysis_dt_s": float(env.sim_dt),
+        "recording_dt_s": float(env.sim_dt),
+        "policy_dt_s": float(env.dt),
+        "recording_frequency_hz": float(1.0 / float(env.sim_dt)),
+        "policy_frequency_hz": float(1.0 / float(env.dt)),
+        "rollout_duration_s": float(num_steps) * float(env.dt),
     }
+    time_s = (np.arange(recording_step_count, dtype=np.float32) + np.float32(1.0)) * np.float32(env.sim_dt)
     arrays = {
         "command": np.asarray(scenario.command, dtype=np.float32),
-        "command_trace": _stack_step_vectors(command_trace),
-        "lin_vel_xy": _stack_step_tensors(lin_vel_samples),
-        "yaw_rate": _stack_step_tensors(yaw_rate_samples),
-        "lin_vel_error_trace": _stack_step_means(lin_vel_error_trace),
-        "yaw_rate_error_trace": _stack_step_means(yaw_rate_error_trace),
-        "gravity_xy_trace": _stack_step_means(gravity_xy_trace),
-        "foot_fz_all_trace": _stack_step_tensors(foot_fz_all_trace),
+        "time_s": time_s,
+        "touchdown_vz_trace": _nanmean_over_env(touchdown_vz_trace_env_np),
+        "touchdown_vz_trace_std": _nanstd_over_env(touchdown_vz_trace_env_np),
+        "touchdown_vz_trace_env": touchdown_vz_trace_env_np,
+        "touchdown_fz_trace": _nanmean_over_env(touchdown_fz_trace_env_np),
+        "touchdown_fz_trace_std": _nanstd_over_env(touchdown_fz_trace_env_np),
+        "touchdown_fz_trace_env": touchdown_fz_trace_env_np,
+        "lin_vel_error_trace": _nanmean_over_env(lin_vel_error_trace_env_np),
+        "lin_vel_error_trace_std": _nanstd_over_env(lin_vel_error_trace_env_np),
+        "lin_vel_error_trace_env": lin_vel_error_trace_env_np,
+        "yaw_rate_error_trace": _nanmean_over_env(yaw_rate_error_trace_env_np),
+        "yaw_rate_error_trace_std": _nanstd_over_env(yaw_rate_error_trace_env_np),
+        "yaw_rate_error_trace_env": yaw_rate_error_trace_env_np,
+        "gravity_xy_trace": _nanmean_over_env(gravity_xy_trace_env_np),
+        "gravity_xy_trace_std": _nanstd_over_env(gravity_xy_trace_env_np),
+        "gravity_xy_trace_env": gravity_xy_trace_env_np,
+        "raw_tracking_lin_trace": _nanmean_over_env(raw_tracking_lin_trace_env_np),
+        "raw_tracking_lin_trace_std": _nanstd_over_env(raw_tracking_lin_trace_env_np),
+        "raw_tracking_lin_trace_env": raw_tracking_lin_trace_env_np,
+        "raw_tracking_ang_trace": _nanmean_over_env(raw_tracking_ang_trace_env_np),
+        "raw_tracking_ang_trace_std": _nanstd_over_env(raw_tracking_ang_trace_env_np),
+        "raw_tracking_ang_trace_env": raw_tracking_ang_trace_env_np,
+        "foot_fz_mean_trace": _nanmean_over_env(foot_fz_mean_trace_env_np),
+        "foot_fz_mean_trace_std": _nanstd_over_env(foot_fz_mean_trace_env_np),
+        "foot_fz_mean_trace_env": foot_fz_mean_trace_env_np,
+        "per_env_lin_vel_rmse": _tensor_to_numpy(per_env_lin_vel_rmse),
+        "per_env_lin_vel_error_mean": _tensor_to_numpy(per_env_lin_vel_error_mean),
+        "per_env_yaw_rate_rmse": _tensor_to_numpy(per_env_yaw_rate_rmse),
+        "per_env_yaw_rate_error_mean": _tensor_to_numpy(per_env_yaw_rate_error_mean),
+        "per_env_gravity_xy_mean": _tensor_to_numpy(per_env_gravity_xy_mean),
+        "per_env_raw_tracking_lin_mean": _tensor_to_numpy(per_env_raw_tracking_lin_mean),
+        "per_env_raw_tracking_ang_mean": _tensor_to_numpy(per_env_raw_tracking_ang_mean),
+        "per_env_touchdown_count": _tensor_to_numpy(touchdown_count_env),
+        "per_env_touchdown_vz_mean": _tensor_to_numpy(per_env_touchdown_vz_mean),
+        "per_env_touchdown_fz_mean": _tensor_to_numpy(per_env_touchdown_fz_mean),
         "foot_fz_all": _tensor_to_numpy(foot_fz_all_tensor),
         "touchdown_vz": _tensor_to_numpy(touchdown_vz_tensor),
         "touchdown_fz": _tensor_to_numpy(touchdown_fz_tensor),
+        "touchdown_vz_left": _tensor_to_numpy(touchdown_vz_left_tensor),
+        "touchdown_vz_right": _tensor_to_numpy(touchdown_vz_right_tensor),
+        "touchdown_fz_left": _tensor_to_numpy(touchdown_fz_left_tensor),
+        "touchdown_fz_right": _tensor_to_numpy(touchdown_fz_right_tensor),
         "contact_fz": _tensor_to_numpy(contact_fz_tensor),
-        "raw_tracking_lin": _tensor_to_numpy(raw_tracking_lin_tensor),
-        "raw_tracking_ang": _tensor_to_numpy(raw_tracking_ang_tensor),
-        "done_count_trace": np.asarray(done_count_trace, dtype=np.int32),
-        "timeout_count_trace": np.asarray(timeout_count_trace, dtype=np.int32),
-        "fall_count_trace": np.asarray(fall_count_trace, dtype=np.int32),
     }
     return BenchmarkResult(metrics=metrics, arrays=arrays)
+
+
+def _reset_locomotion_to_default_pose(*, env, torch, env_ids=None) -> None:
+    """Reset locomotion envs to the exact configured default pose before analysis starts."""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    else:
+        env_ids = env_ids.to(device=env.device, dtype=torch.long)
+    if env_ids.numel() == 0:
+        return
+    if not hasattr(env, "default_dof_pos"):
+        raise TypeError("Default-pose analysis is currently implemented for locomotion environments only.")
+
+    if hasattr(env, "default_dof_pos_base"):
+        default_dof_pos = env.default_dof_pos_base.view(1, -1).expand(env.num_envs, -1)
+    else:
+        default_dof_pos = env.default_dof_pos
+    env.simulator.dof_pos[env_ids] = default_dof_pos[env_ids]
+    env.simulator.dof_vel[env_ids] = 0.0
+
+    env.simulator.robot_root_states[env_ids] = env.base_init_state
+    env.simulator.robot_root_states[env_ids, :3] += env.terrain_manager.get_state(
+        "locomotion_terrain"
+    ).env_origins[env_ids]
+    env.simulator.robot_root_states[env_ids, 7:13] = 0.0
+
+    env.episode_length_buf[env_ids] = 0
+    env.reset_buf[env_ids] = 0
+    env.time_out_buf[env_ids] = False
+
+    env.simulator.set_actor_root_state_tensor_robots(env_ids, env.simulator.robot_root_states)
+    env.simulator.set_dof_state_tensor_robots(env_ids, env.simulator.dof_state)
+    env.simulator.clear_contact_forces_history(env_ids)
+    env.simulator.refresh_sim_tensors()
+    env._pre_compute_observations_callback()
 
 
 def _apply_fixed_command_and_rebuild_actor_obs(*, env, wrapped_env, command_tensor, torch):
@@ -993,8 +1258,26 @@ def _apply_fixed_command_and_rebuild_actor_obs(*, env, wrapped_env, command_tens
     return _rebuild_actor_obs_without_history_update(env=env, wrapped_env=wrapped_env, torch=torch)
 
 
+def _actor_obs_from_env_obs_dict(*, env, wrapped_env, torch):
+    clip_limit = env.observation_manager.cfg.clip_observations
+    actor_obs_keys = getattr(wrapped_env, "_actor_obs_keys")
+    return torch.cat(
+        [torch.clip(env.obs_buf_dict[key], -clip_limit, clip_limit) for key in actor_obs_keys],
+        dim=1,
+    )
+
+
 def _apply_fixed_command(*, env, command_tensor) -> None:
     env.command_manager.commands[:] = command_tensor.view(1, -1).expand_as(env.command_manager.commands)
+
+
+def _reward_term_param(env, term_name: str, param_name: str, default: float) -> float:
+    reward_manager = getattr(env, "reward_manager", None)
+    if reward_manager is None or term_name not in reward_manager.active_terms:
+        return float(default)
+    term_cfg = reward_manager.get_term_cfg(term_name)
+    params = getattr(term_cfg, "params", None) or {}
+    return float(params.get(param_name, default))
 
 
 def _rebuild_actor_obs_without_history_update(*, env, wrapped_env, torch):
@@ -1022,6 +1305,12 @@ def _save_benchmark_arrays(
         "penalty_scale_at_checkpoint": _penalty_scale_at_checkpoint(resolved_run),
         "effective_reward_weight_at_checkpoint": _effective_reward_weight_at_checkpoint(resolved_run),
         "checkpoint_step": resolved_run.checkpoint_step,
+        "analysis_dt_s": benchmark_result.metrics.get("analysis_dt_s"),
+        "recording_dt_s": benchmark_result.metrics.get("recording_dt_s"),
+        "policy_dt_s": benchmark_result.metrics.get("policy_dt_s"),
+        "recording_frequency_hz": benchmark_result.metrics.get("recording_frequency_hz"),
+        "policy_frequency_hz": benchmark_result.metrics.get("policy_frequency_hz"),
+        "rollout_duration_s": benchmark_result.metrics.get("rollout_duration_s"),
     }
     np.savez_compressed(
         npz_path,
@@ -1081,6 +1370,8 @@ def _generate_plots(results: list[dict[str, Any]], output_dir: Path) -> None:
 
     _plot_metric_heatmaps(results, plots_dir, plt)
     _plot_metric_vs_weight(results, plots_dir, plt)
+    _plot_left_right_metric_vs_weight(results, plots_dir, plt)
+    _plot_time_series_comparisons(results, output_dir, plots_dir, plt)
 
 
 def _get_logger() -> logging.Logger:
@@ -1101,6 +1392,147 @@ def _maybe_empty_cuda_cache() -> None:
             torch.cuda.empty_cache()
     except Exception:
         return
+
+
+def _physics_randomization_report(env) -> dict[str, Any]:
+    randomization_manager = getattr(env, "randomization_manager", None)
+    cfg = getattr(randomization_manager, "cfg", None)
+    setup_terms_cfg = getattr(cfg, "setup_terms", {}) or {}
+    reset_terms_cfg = getattr(cfg, "reset_terms", {}) or {}
+    setup_terms = list(setup_terms_cfg.keys())
+    reset_terms = list(reset_terms_cfg.keys())
+    physics_term_names = {
+        "mass_randomizer",
+        "randomize_friction_startup",
+        "randomize_base_com_startup",
+    }
+    configured_terms = [
+        term_name
+        for term_name, term_cfg in setup_terms_cfg.items()
+        if term_name in physics_term_names and _randomization_term_enabled(term_name, term_cfg)
+    ]
+    detected_fields = _detect_physics_variation_fields(env)
+    return {
+        "physics_randomization_configured": bool(configured_terms),
+        "physics_randomization_detected_across_envs": bool(detected_fields),
+        "physics_randomization_terms": ",".join(configured_terms),
+        "detected_physics_variation_fields": ",".join(detected_fields),
+        "setup_terms": ",".join(setup_terms),
+        "reset_terms": ",".join(reset_terms),
+    }
+
+
+def _randomization_term_enabled(term_name: str, term_cfg: Any) -> bool:
+    params = getattr(term_cfg, "params", None) or {}
+    if not bool(params.get("enabled", True)):
+        return False
+    if term_name == "mass_randomizer":
+        return bool(params.get("enable_link_mass", True) or params.get("enable_base_mass", True))
+    return True
+
+
+def _detect_physics_variation_fields(env) -> list[str]:
+    if int(getattr(env, "num_envs", 1)) <= 1:
+        return []
+
+    simulator = getattr(env, "simulator", None)
+    detected: list[str] = []
+    if simulator is None:
+        return detected
+
+    if hasattr(simulator, "gym"):
+        detected.extend(_detect_isaacgym_physics_variation(env, simulator))
+
+    detected.extend(_detect_tensor_physics_variation(simulator))
+    if _tensor_has_cross_env_variation(getattr(simulator, "_base_com_bias", None)):
+        detected.append("base_com_bias")
+    if _tensor_has_cross_env_variation(getattr(simulator, "base_com_bias", None)):
+        detected.append("base_com_bias")
+
+    return sorted(set(detected))
+
+
+def _detect_isaacgym_physics_variation(env, simulator) -> list[str]:
+    detected: list[str] = []
+    gym = simulator.gym
+    envs = getattr(simulator, "envs", [])
+    robot_handles = getattr(simulator, "robot_handles", [])
+    if not envs or not robot_handles:
+        return detected
+
+    mass_rows: list[list[float]] = []
+    com_rows: list[list[float]] = []
+    friction_rows: list[list[float]] = []
+    body_names = list(getattr(simulator, "_body_list", []) or [])
+    randomized_body_names = list(getattr(env.robot_config, "randomize_link_body_names", None) or [])
+    torso_name = getattr(env.robot_config, "torso_name", None)
+    if torso_name:
+        randomized_body_names.append(torso_name)
+    body_indices = [body_names.index(name) for name in randomized_body_names if name in body_names]
+
+    for env_ptr, actor in zip(envs, robot_handles):
+        if body_indices:
+            body_props = gym.get_actor_rigid_body_properties(env_ptr, actor)
+            mass_rows.append([float(body_props[index].mass) for index in body_indices])
+            com_row: list[float] = []
+            for index in body_indices:
+                com = body_props[index].com
+                com_row.extend([float(com.x), float(com.y), float(com.z)])
+            com_rows.append(com_row)
+
+        shape_props = gym.get_actor_rigid_shape_properties(env_ptr, actor)
+        if shape_props:
+            friction_rows.append([float(prop.friction) for prop in shape_props])
+
+    if _rows_have_cross_env_variation(mass_rows):
+        detected.append("body_mass")
+    if _rows_have_cross_env_variation(com_rows):
+        detected.append("body_com")
+    if _rows_have_cross_env_variation(friction_rows):
+        detected.append("geom_friction")
+    return detected
+
+
+def _detect_tensor_physics_variation(simulator) -> list[str]:
+    detected: list[str] = []
+    bridge = getattr(getattr(simulator, "backend", None), "warp_model_bridge", None)
+    if bridge is None:
+        return detected
+    for field_name in ("body_mass", "geom_friction", "body_ipos"):
+        if _tensor_has_cross_env_variation(getattr(bridge, field_name, None)):
+            detected.append(field_name)
+    return detected
+
+
+def _rows_have_cross_env_variation(rows: list[list[float]], *, atol: float = 1e-7) -> bool:
+    if len(rows) <= 1:
+        return False
+    try:
+        values = np.asarray(rows, dtype=np.float64)
+    except ValueError:
+        return False
+    if values.ndim != 2 or values.shape[0] <= 1 or values.size == 0:
+        return False
+    deltas = np.abs(values - values[0:1])
+    return bool(np.isfinite(deltas).any() and np.nanmax(deltas) > atol)
+
+
+def _tensor_has_cross_env_variation(values: Any, *, atol: float = 1e-7) -> bool:
+    if values is None:
+        return False
+    try:
+        if hasattr(values, "detach"):
+            array = values.detach().cpu().numpy()
+        elif hasattr(values, "numpy"):
+            array = values.numpy()
+        else:
+            array = np.asarray(values)
+    except Exception:
+        return False
+    if array.ndim == 0 or array.shape[0] <= 1 or array.size == 0:
+        return False
+    deltas = np.abs(array - array[0:1])
+    return bool(np.isfinite(deltas).any() and np.nanmax(deltas) > atol)
 
 
 def _plot_metric_heatmaps(results: list[dict[str, Any]], plots_dir: Path, plt) -> None:
@@ -1185,6 +1617,146 @@ def _plot_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) 
         plt.close(fig)
 
 
+def _plot_left_right_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) -> None:
+    scenario_names = sorted({row["scenario"] for row in results})
+    category_colors = {
+        "baseline": "tab:green",
+        "gated": "tab:blue",
+        "not_gated": "tab:orange",
+        "olaf": "tab:red",
+    }
+    metric_specs = [
+        (
+            "touchdown_vz_p95",
+            "touchdown_vz_left_p95",
+            "touchdown_vz_right_p95",
+            "Touchdown Vertical Speed P95",
+            "m/s",
+        ),
+        (
+            "touchdown_fz_p95",
+            "touchdown_fz_left_p95",
+            "touchdown_fz_right_p95",
+            "Touchdown Vertical Force P95",
+            "N",
+        ),
+    ]
+
+    for metric_base, left_key, right_key, title, ylabel in metric_specs:
+        fig, axes = plt.subplots(
+            nrows=len(scenario_names),
+            ncols=1,
+            figsize=(10, max(4, 3.5 * len(scenario_names))),
+            squeeze=False,
+        )
+        plotted_any = False
+
+        for axis, scenario_name in zip(axes[:, 0], scenario_names):
+            scenario_rows = [row for row in results if row["scenario"] == scenario_name]
+            categories = sorted({str(row["category"]) for row in scenario_rows})
+            for category in categories:
+                category_rows = sorted(
+                    (row for row in scenario_rows if str(row["category"]) == category),
+                    key=_plot_weight_value,
+                )
+                if not category_rows:
+                    continue
+                weights = [_plot_weight_value(row) for row in category_rows]
+                left_values = [float(row.get(left_key, np.nan)) for row in category_rows]
+                right_values = [float(row.get(right_key, np.nan)) for row in category_rows]
+                color = category_colors.get(category, None)
+                axis.plot(weights, left_values, marker="o", linestyle="-", color=color, label=f"{category} left")
+                axis.plot(weights, right_values, marker="s", linestyle="--", color=color, label=f"{category} right")
+                plotted_any = True
+
+            axis.set_title(f"{title} | {scenario_name}")
+            axis.set_xlabel("Effective Reward Weight Magnitude")
+            axis.set_ylabel(ylabel)
+            axis.grid(True, alpha=0.3)
+            axis.legend(fontsize=7)
+
+        if plotted_any:
+            fig.tight_layout()
+            fig.savefig(plots_dir / f"{metric_base}_left_right_by_weight.png", dpi=200)
+        plt.close(fig)
+
+
+def _plot_time_series_comparisons(
+    results: list[dict[str, Any]],
+    output_dir: Path,
+    plots_dir: Path,
+    plt,
+) -> None:
+    scenario_names = sorted({row["scenario"] for row in results})
+    trace_specs = [
+        ("lin_vel_error_trace", "Linear Velocity Error", "m/s"),
+        ("yaw_rate_error_trace", "Yaw Rate Error", "rad/s"),
+        ("gravity_xy_trace", "Projected Gravity XY Norm", ""),
+        ("raw_tracking_lin_trace", "Raw Linear Tracking Reward", ""),
+        ("raw_tracking_ang_trace", "Raw Angular Tracking Reward", ""),
+        ("foot_fz_mean_trace", "Mean Vertical Foot Force", "N"),
+        ("touchdown_vz_trace", "Touchdown Vertical Speed", "m/s"),
+        ("touchdown_fz_trace", "Touchdown Vertical Force", "N"),
+    ]
+
+    for scenario_name in scenario_names:
+        scenario_rows = sorted(
+            (row for row in results if row["scenario"] == scenario_name),
+            key=lambda row: (
+                str(row["category"]),
+                _plot_weight_value(row),
+                str(row["run_name"]),
+                int(row["checkpoint_step"]),
+            ),
+        )
+        scenario_stem = _slugify(scenario_name)
+
+        for trace_name, title, ylabel in trace_specs:
+            fig, ax = plt.subplots(figsize=(12, 6))
+            plotted_any = False
+
+            for row in scenario_rows:
+                data_path = output_dir / str(row["run_name"]) / f"{scenario_stem}_benchmark_data.npz"
+                if not data_path.exists():
+                    continue
+                with np.load(data_path, allow_pickle=False) as data:
+                    if "time_s" not in data or trace_name not in data:
+                        continue
+                    time_s = data["time_s"]
+                    values = data[trace_name]
+                    std_values = data[f"{trace_name}_std"] if f"{trace_name}_std" in data else None
+
+                valid = np.isfinite(values)
+                if not valid.any():
+                    continue
+
+                label = f"{row['run_name']} | {row['checkpoint_name']}"
+                ax.plot(time_s[valid], values[valid], marker="o", markersize=2, linewidth=0.8, label=label)
+                if std_values is not None:
+                    std_valid = valid & np.isfinite(std_values)
+                    if std_valid.any():
+                        ax.fill_between(
+                            time_s[std_valid],
+                            values[std_valid] - std_values[std_valid],
+                            values[std_valid] + std_values[std_valid],
+                            alpha=0.12,
+                        )
+                plotted_any = True
+
+            if not plotted_any:
+                plt.close(fig)
+                continue
+
+            ax.set_title(f"{title} | {scenario_name}")
+            ax.set_xlabel("time [s]")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=7)
+            fig.tight_layout()
+            fig.savefig(plots_dir / f"{scenario_stem}_{trace_name}_timeseries.png", dpi=200)
+            plt.close(fig)
+
+
 def _plot_penalty_scale_history(resolved_runs: list[ResolvedRun], output_dir: Path) -> None:
     try:
         import matplotlib.pyplot as plt
@@ -1251,22 +1823,35 @@ def _concat_samples(samples):
     return torch.cat(samples)
 
 
-def _stack_step_means(samples) -> np.ndarray:
-    if not samples:
-        return np.empty(0, dtype=np.float32)
-    return np.asarray([sample.float().mean().item() for sample in samples], dtype=np.float32)
-
-
-def _stack_step_vectors(samples) -> np.ndarray:
+def _stack_step_tensors(samples) -> np.ndarray:
     if not samples:
         return np.empty((0, 0), dtype=np.float32)
     return np.stack([sample.numpy() for sample in samples]).astype(np.float32)
 
 
-def _stack_step_tensors(samples) -> np.ndarray:
-    if not samples:
+def _nanmean_over_env(values: np.ndarray) -> np.ndarray:
+    if values.size == 0:
         return np.empty(0, dtype=np.float32)
-    return np.stack([sample.numpy() for sample in samples]).astype(np.float32)
+    finite = np.isfinite(values)
+    counts = finite.sum(axis=1)
+    sums = np.where(finite, values, 0.0).sum(axis=1)
+    output = np.full(values.shape[0], np.nan, dtype=np.float32)
+    valid = counts > 0
+    output[valid] = (sums[valid] / counts[valid]).astype(np.float32)
+    return output
+
+
+def _nanstd_over_env(values: np.ndarray) -> np.ndarray:
+    if values.size == 0:
+        return np.empty(0, dtype=np.float32)
+    means = _nanmean_over_env(values)
+    finite = np.isfinite(values)
+    counts = finite.sum(axis=1)
+    centered = np.where(finite, values - means[:, None], 0.0)
+    variances = np.full(values.shape[0], np.nan, dtype=np.float32)
+    valid = counts > 0
+    variances[valid] = (np.square(centered[valid]).sum(axis=1) / counts[valid]).astype(np.float32)
+    return np.sqrt(variances).astype(np.float32)
 
 
 def _tensor_to_numpy(values) -> np.ndarray:
@@ -1283,19 +1868,50 @@ def _slugify(label: str) -> str:
 def _metric_names_for_plots() -> list[str]:
     return [
         "lin_vel_rmse",
+        "lin_vel_rmse_var",
+        "lin_vel_rmse_std",
         "yaw_rate_rmse",
+        "yaw_rate_rmse_var",
+        "yaw_rate_rmse_std",
         "fall_rate",
         "mean_episode_length_s",
         "lin_vel_error_mean",
+        "lin_vel_error_mean_var",
+        "lin_vel_error_mean_std",
         "yaw_rate_error_mean",
+        "yaw_rate_error_mean_var",
+        "yaw_rate_error_mean_std",
+        "gravity_xy_mean",
+        "gravity_xy_mean_var",
+        "gravity_xy_mean_std",
         "touchdown_vz_mean",
+        "touchdown_vz_mean_across_envs",
+        "touchdown_vz_mean_var_across_envs",
+        "touchdown_vz_mean_std_across_envs",
         "touchdown_vz_p95",
+        "touchdown_vz_left_mean",
+        "touchdown_vz_left_p95",
+        "touchdown_vz_right_mean",
+        "touchdown_vz_right_p95",
         "touchdown_fz_mean",
+        "touchdown_fz_mean_across_envs",
+        "touchdown_fz_mean_var_across_envs",
+        "touchdown_fz_mean_std_across_envs",
         "touchdown_fz_p95",
+        "touchdown_fz_left_mean",
+        "touchdown_fz_left_p95",
+        "touchdown_fz_right_mean",
+        "touchdown_fz_right_p95",
         "contact_fz_mean",
         "contact_fz_p95",
         "foot_fz_all_mean",
         "foot_fz_all_p95",
+        "raw_tracking_lin_mean",
+        "raw_tracking_lin_mean_var",
+        "raw_tracking_lin_mean_std",
+        "raw_tracking_ang_mean",
+        "raw_tracking_ang_mean_var",
+        "raw_tracking_ang_mean_std",
     ]
 
 
@@ -1330,6 +1946,39 @@ def _safe_mean(values) -> float:
     if values.numel() == 0:
         return float("nan")
     return float(values.float().mean().item())
+
+
+def _safe_std(values) -> float:
+    if values.numel() == 0:
+        return float("nan")
+    return float(values.float().std(unbiased=False).item())
+
+
+def _safe_var(values) -> float:
+    if values.numel() == 0:
+        return float("nan")
+    return float(values.float().var(unbiased=False).item())
+
+
+def _safe_nanmean(values) -> float:
+    finite_values = values[values.isfinite()]
+    if finite_values.numel() == 0:
+        return float("nan")
+    return float(finite_values.float().mean().item())
+
+
+def _safe_nanstd(values) -> float:
+    finite_values = values[values.isfinite()]
+    if finite_values.numel() == 0:
+        return float("nan")
+    return float(finite_values.float().std(unbiased=False).item())
+
+
+def _safe_nanvar(values) -> float:
+    finite_values = values[values.isfinite()]
+    if finite_values.numel() == 0:
+        return float("nan")
+    return float(finite_values.float().var(unbiased=False).item())
 
 
 def _safe_quantile(values, q: float) -> float:

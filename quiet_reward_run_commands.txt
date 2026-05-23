@@ -188,3 +188,12 @@ PYTHONPATH=src/holosoma python3 -m holosoma.analyze_quiet_runs \
   --headless \
   --plots
 
+# Benchmark various analysis comparison(2)
+PYTHONPATH=src/holosoma python3 -m holosoma.analyze_quiet_runs \
+  --wandb-entity robox \
+  --wandb-project holosoma \
+  --scenario wwalk_medium:0.65,0,0 \
+  --scenario backward_medium:-0.65,0,0 \
+  --output-dir analysis/quiet_reward \
+  --headless \
+  --plots
