@@ -1,0 +1,51 @@
+# Commands for the run
+# 1 run with a Basic Fast Sac
+# 3 run with Not Gated reward
+# different weights = 1.0, 5.0, 10.0
+# 3 run with Gated reward
+# different weights = 1.0, 5.0, 10.0
+# 3 run with Not Gated reward after 12.000 iteration
+# different weights = 1.0, 5.0, 10.0
+# 3 run with Gated reward after 12.000 iteration
+# different weights = 1.0, 5.0, 10.0
+# total runs = 13
+
+# Basic Fast Sac
+python src/holosoma/holosoma/train_agent.py \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
+    simulator:isaacgym \
+    logger:wandb \
+    --logger.entity robox \
+    --logger.project holosoma \
+    --logger.video.enabled False \
+    --logger.name basic_fast_sac \
+    --training.seed 1 \
+    --training.num-envs 4096 \
+    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-0.0
+
+# Start : Not Gated 10.0
+python src/holosoma/holosoma/train_agent.py \
+    exp:g1-23dof-fast-sac-quiet-not-gated \
+    simulator:isaacgym \
+    logger:wandb \
+    --logger.entity robox \
+    --logger.project holosoma \
+    --logger.video.enabled False \
+    --logger.name 0_iteration_not_gated_quiet_10.00 \
+    --training.seed 1 \
+    --training.num-envs 4096 \
+    --reward.terms.penalty-feet-landing-speed-not-gated.weight=-10.00
+
+
+# Start : Olaf 10.0
+python src/holosoma/holosoma/train_agent.py \
+    exp:g1-23dof-fast-sac-quiet-olaf \
+    simulator:isaacgym \
+    logger:wandb \
+    --logger.entity robox \
+    --logger.project holosoma \
+    --logger.video.enabled False \
+    --logger.name 0_iteration_olaf_quiet_10.00 \
+    --training.seed 1 \
+    --training.num-envs 4096 \
+    --reward.terms.penalty-feet-landing-speed-olaf.weight=-10.00

@@ -199,6 +199,7 @@ def run_analysis(
     episode_length_s: float,
     contact_threshold: float,
     headless: bool,
+    device: str | None,
 ) -> list[dict[str, Any]]:
     logger = _get_logger()
 
@@ -219,6 +220,7 @@ def run_analysis(
                     num_envs=num_envs,
                     episode_length_s=episode_length_s,
                     headless=headless,
+                    device=device,
                 )
 
             resolved_num_steps = num_steps
@@ -411,6 +413,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="analysis/quiet_reward",
         help="Directory where CSV and JSON summaries will be written.",
     )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Torch device for evaluation tensors, e.g. 'cuda:0' or 'cpu'. Defaults to auto-detect.",
+    )
     _add_bool_flag(
         parser,
         name="headless",
@@ -479,6 +486,7 @@ def main() -> None:
         episode_length_s=args.episode_length_s,
         contact_threshold=args.contact_threshold,
         headless=args.headless,
+        device=args.device,
     )
     write_results(results, output_dir, generate_plots=args.plots)
 
@@ -723,6 +731,7 @@ def _create_analysis_runtime(
     num_envs: int,
     episode_length_s: float,
     headless: bool,
+    device: str | None,
 ):
     import holosoma.config_values.logger
     from holosoma.utils.eval_utils import CheckpointConfig, load_saved_experiment_config
@@ -736,7 +745,7 @@ def _create_analysis_runtime(
         episode_length_s=episode_length_s,
         headless=headless,
     )
-    env, device, simulation_app = setup_simulation_environment(analysis_cfg)
+    env, device, simulation_app = setup_simulation_environment(analysis_cfg, device=device)
     randomization_report = _physics_randomization_report(env)
     logger = _get_logger()
     logger.info(
@@ -873,14 +882,19 @@ def _evaluate_fast_sac_checkpoint(
 
     touchdown_vz_samples: list[torch.Tensor] = []
     touchdown_fz_samples: list[torch.Tensor] = []
+    touchdown_specific_ke_samples: list[torch.Tensor] = []
     touchdown_vz_left_samples: list[torch.Tensor] = []
     touchdown_vz_right_samples: list[torch.Tensor] = []
     touchdown_fz_left_samples: list[torch.Tensor] = []
     touchdown_fz_right_samples: list[torch.Tensor] = []
+    touchdown_specific_ke_left_samples: list[torch.Tensor] = []
+    touchdown_specific_ke_right_samples: list[torch.Tensor] = []
     contact_fz_samples: list[torch.Tensor] = []
     foot_fz_all_samples: list[torch.Tensor] = []
+    foot_downward_specific_ke_all_samples: list[torch.Tensor] = []
     touchdown_vz_trace_env: list[torch.Tensor] = []
     touchdown_fz_trace_env: list[torch.Tensor] = []
+    touchdown_specific_ke_trace_env: list[torch.Tensor] = []
     lin_vel_error_trace_env: list[torch.Tensor] = []
     yaw_rate_error_trace_env: list[torch.Tensor] = []
     gravity_xy_trace_env: list[torch.Tensor] = []
@@ -891,6 +905,9 @@ def _evaluate_fast_sac_checkpoint(
     foot_downward_vz_mean_trace_env: list[torch.Tensor] = []
     foot_downward_vz_left_trace_env: list[torch.Tensor] = []
     foot_downward_vz_right_trace_env: list[torch.Tensor] = []
+    foot_downward_specific_ke_mean_trace_env: list[torch.Tensor] = []
+    foot_downward_specific_ke_left_trace_env: list[torch.Tensor] = []
+    foot_downward_specific_ke_right_trace_env: list[torch.Tensor] = []
     foot_fz_left_trace_env: list[torch.Tensor] = []
     foot_fz_right_trace_env: list[torch.Tensor] = []
 
@@ -908,6 +925,7 @@ def _evaluate_fast_sac_checkpoint(
     raw_tracking_ang_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
     touchdown_vz_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
     touchdown_fz_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+    touchdown_specific_ke_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
     touchdown_count_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
     recording_step_count = 0
     fall_event_count = 0
@@ -969,6 +987,7 @@ def _evaluate_fast_sac_checkpoint(
             contact_fz = torch.clamp(env.simulator.contact_forces[:, env.feet_indices, 2], min=0.0)
             current_foot_vz = env.simulator._rigid_body_vel[:, env.feet_indices, 2]
             current_downward_speed = torch.clamp(-current_foot_vz, min=0.0)
+            current_downward_specific_ke = 0.5 * torch.square(current_downward_speed)
             foot_fz_all_samples.append(contact_fz.reshape(-1).detach().cpu())
             foot_fz_mean_trace_env.append(contact_fz.mean(dim=1).detach().cpu())
             foot_fz_left_trace_env.append(contact_fz[:, 0].detach().cpu())
@@ -977,6 +996,10 @@ def _evaluate_fast_sac_checkpoint(
             foot_downward_vz_mean_trace_env.append(current_downward_speed.mean(dim=1).detach().cpu())
             foot_downward_vz_left_trace_env.append(current_downward_speed[:, 0].detach().cpu())
             foot_downward_vz_right_trace_env.append(current_downward_speed[:, 1].detach().cpu())
+            foot_downward_specific_ke_all_samples.append(current_downward_specific_ke.reshape(-1).detach().cpu())
+            foot_downward_specific_ke_mean_trace_env.append(current_downward_specific_ke.mean(dim=1).detach().cpu())
+            foot_downward_specific_ke_left_trace_env.append(current_downward_specific_ke[:, 0].detach().cpu())
+            foot_downward_specific_ke_right_trace_env.append(current_downward_specific_ke[:, 1].detach().cpu())
             contact_now = contact_fz > contact_threshold
             touchdown_now = contact_now & ~prev_contact
             downward_speed = torch.clamp(-prev_foot_vz, min=0.0)
@@ -986,24 +1009,33 @@ def _evaluate_fast_sac_checkpoint(
             touchdown_fz_by_env = torch.full(
                 (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
             )
+            touchdown_specific_ke_by_env = torch.full(
+                (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
+            )
 
             if touchdown_now.any():
                 touchdown_env_ids, _touchdown_foot_ids = touchdown_now.nonzero(as_tuple=True)
                 touchdown_vz_values = downward_speed[touchdown_env_ids, _touchdown_foot_ids]
                 touchdown_fz_values = contact_fz[touchdown_env_ids, _touchdown_foot_ids]
+                touchdown_specific_ke_values = 0.5 * torch.square(touchdown_vz_values)
                 touchdown_vz_step = touchdown_vz_values.detach().cpu()
                 touchdown_fz_step = touchdown_fz_values.detach().cpu()
+                touchdown_specific_ke_step = touchdown_specific_ke_values.detach().cpu()
                 touchdown_vz_samples.append(touchdown_vz_step)
                 touchdown_fz_samples.append(touchdown_fz_step)
+                touchdown_specific_ke_samples.append(touchdown_specific_ke_step)
                 ones = torch.ones_like(touchdown_vz_values, dtype=torch.float32)
                 touchdown_vz_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_vz_values)
                 touchdown_fz_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_fz_values)
+                touchdown_specific_ke_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_specific_ke_values)
                 touchdown_count_env.scatter_add_(0, touchdown_env_ids, ones)
                 touchdown_vz_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
                 touchdown_fz_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+                touchdown_specific_ke_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
                 touchdown_step_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
                 touchdown_vz_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_vz_values)
                 touchdown_fz_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_fz_values)
+                touchdown_specific_ke_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_specific_ke_values)
                 touchdown_step_count.scatter_add_(0, touchdown_env_ids, ones)
                 touchdown_has_sample = touchdown_step_count > 0
                 touchdown_vz_by_env[touchdown_has_sample] = (
@@ -1012,20 +1044,32 @@ def _evaluate_fast_sac_checkpoint(
                 touchdown_fz_by_env[touchdown_has_sample] = (
                     touchdown_fz_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
                 )
+                touchdown_specific_ke_by_env[touchdown_has_sample] = (
+                    touchdown_specific_ke_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
+                )
             touchdown_vz_trace_env.append(touchdown_vz_by_env.detach().cpu())
             touchdown_fz_trace_env.append(touchdown_fz_by_env.detach().cpu())
+            touchdown_specific_ke_trace_env.append(touchdown_specific_ke_by_env.detach().cpu())
             touchdown_left = touchdown_now[:, 0]
             touchdown_right = touchdown_now[:, 1]
             if touchdown_left.any():
                 touchdown_vz_left_step = downward_speed[:, 0][touchdown_left].detach().cpu()
                 touchdown_fz_left_step = contact_fz[:, 0][touchdown_left].detach().cpu()
+                touchdown_specific_ke_left_step = (
+                    0.5 * torch.square(downward_speed[:, 0][touchdown_left])
+                ).detach().cpu()
                 touchdown_vz_left_samples.append(touchdown_vz_left_step)
                 touchdown_fz_left_samples.append(touchdown_fz_left_step)
+                touchdown_specific_ke_left_samples.append(touchdown_specific_ke_left_step)
             if touchdown_right.any():
                 touchdown_vz_right_step = downward_speed[:, 1][touchdown_right].detach().cpu()
                 touchdown_fz_right_step = contact_fz[:, 1][touchdown_right].detach().cpu()
+                touchdown_specific_ke_right_step = (
+                    0.5 * torch.square(downward_speed[:, 1][touchdown_right])
+                ).detach().cpu()
                 touchdown_vz_right_samples.append(touchdown_vz_right_step)
                 touchdown_fz_right_samples.append(touchdown_fz_right_step)
+                touchdown_specific_ke_right_samples.append(touchdown_specific_ke_right_step)
             if contact_now.any():
                 contact_fz_samples.append(contact_fz[contact_now].detach().cpu())
 
@@ -1085,12 +1129,18 @@ def _evaluate_fast_sac_checkpoint(
     per_env_touchdown_fz_mean = torch.full(
         (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
     )
+    per_env_touchdown_specific_ke_mean = torch.full(
+        (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
+    )
     touchdown_env_mask = touchdown_count_env > 0
     per_env_touchdown_vz_mean[touchdown_env_mask] = (
         touchdown_vz_sum_env[touchdown_env_mask] / touchdown_count_env[touchdown_env_mask]
     )
     per_env_touchdown_fz_mean[touchdown_env_mask] = (
         touchdown_fz_sum_env[touchdown_env_mask] / touchdown_count_env[touchdown_env_mask]
+    )
+    per_env_touchdown_specific_ke_mean[touchdown_env_mask] = (
+        touchdown_specific_ke_sum_env[touchdown_env_mask] / touchdown_count_env[touchdown_env_mask]
     )
 
     lin_vel_rmse = _safe_mean(per_env_lin_vel_rmse)
@@ -1107,15 +1157,20 @@ def _evaluate_fast_sac_checkpoint(
 
     touchdown_vz_tensor = _concat_samples(touchdown_vz_samples)
     touchdown_fz_tensor = _concat_samples(touchdown_fz_samples)
+    touchdown_specific_ke_tensor = _concat_samples(touchdown_specific_ke_samples)
     touchdown_vz_left_tensor = _concat_samples(touchdown_vz_left_samples)
     touchdown_vz_right_tensor = _concat_samples(touchdown_vz_right_samples)
     touchdown_fz_left_tensor = _concat_samples(touchdown_fz_left_samples)
     touchdown_fz_right_tensor = _concat_samples(touchdown_fz_right_samples)
+    touchdown_specific_ke_left_tensor = _concat_samples(touchdown_specific_ke_left_samples)
+    touchdown_specific_ke_right_tensor = _concat_samples(touchdown_specific_ke_right_samples)
     contact_fz_tensor = _concat_samples(contact_fz_samples)
     foot_fz_all_tensor = _concat_samples(foot_fz_all_samples)
     foot_downward_vz_all_tensor = _concat_samples(foot_downward_vz_all_samples)
+    foot_downward_specific_ke_all_tensor = _concat_samples(foot_downward_specific_ke_all_samples)
     touchdown_vz_trace_env_np = _stack_step_tensors(touchdown_vz_trace_env)
     touchdown_fz_trace_env_np = _stack_step_tensors(touchdown_fz_trace_env)
+    touchdown_specific_ke_trace_env_np = _stack_step_tensors(touchdown_specific_ke_trace_env)
     lin_vel_error_trace_env_np = _stack_step_tensors(lin_vel_error_trace_env)
     yaw_rate_error_trace_env_np = _stack_step_tensors(yaw_rate_error_trace_env)
     gravity_xy_trace_env_np = _stack_step_tensors(gravity_xy_trace_env)
@@ -1127,6 +1182,9 @@ def _evaluate_fast_sac_checkpoint(
     foot_downward_vz_mean_trace_env_np = _stack_step_tensors(foot_downward_vz_mean_trace_env)
     foot_downward_vz_left_trace_env_np = _stack_step_tensors(foot_downward_vz_left_trace_env)
     foot_downward_vz_right_trace_env_np = _stack_step_tensors(foot_downward_vz_right_trace_env)
+    foot_downward_specific_ke_mean_trace_env_np = _stack_step_tensors(foot_downward_specific_ke_mean_trace_env)
+    foot_downward_specific_ke_left_trace_env_np = _stack_step_tensors(foot_downward_specific_ke_left_trace_env)
+    foot_downward_specific_ke_right_trace_env_np = _stack_step_tensors(foot_downward_specific_ke_right_trace_env)
     metrics = {
         "num_envs": env.num_envs,
         "num_steps": num_steps,
@@ -1175,12 +1233,23 @@ def _evaluate_fast_sac_checkpoint(
         "touchdown_fz_left_p95": _safe_quantile(touchdown_fz_left_tensor, 0.95),
         "touchdown_fz_right_mean": _safe_mean(touchdown_fz_right_tensor),
         "touchdown_fz_right_p95": _safe_quantile(touchdown_fz_right_tensor, 0.95),
+        "touchdown_specific_ke_mean": _safe_mean(touchdown_specific_ke_tensor),
+        "touchdown_specific_ke_mean_across_envs": _safe_nanmean(per_env_touchdown_specific_ke_mean),
+        "touchdown_specific_ke_mean_var_across_envs": _safe_nanvar(per_env_touchdown_specific_ke_mean),
+        "touchdown_specific_ke_mean_std_across_envs": _safe_nanstd(per_env_touchdown_specific_ke_mean),
+        "touchdown_specific_ke_p95": _safe_quantile(touchdown_specific_ke_tensor, 0.95),
+        "touchdown_specific_ke_left_mean": _safe_mean(touchdown_specific_ke_left_tensor),
+        "touchdown_specific_ke_left_p95": _safe_quantile(touchdown_specific_ke_left_tensor, 0.95),
+        "touchdown_specific_ke_right_mean": _safe_mean(touchdown_specific_ke_right_tensor),
+        "touchdown_specific_ke_right_p95": _safe_quantile(touchdown_specific_ke_right_tensor, 0.95),
         "contact_fz_mean": _safe_mean(contact_fz_tensor),
         "contact_fz_p95": _safe_quantile(contact_fz_tensor, 0.95),
         "foot_fz_all_mean": _safe_mean(foot_fz_all_tensor),
         "foot_fz_all_p95": _safe_quantile(foot_fz_all_tensor, 0.95),
         "foot_downward_vz_all_mean": _safe_mean(foot_downward_vz_all_tensor),
         "foot_downward_vz_all_p95": _safe_quantile(foot_downward_vz_all_tensor, 0.95),
+        "foot_downward_specific_ke_all_mean": _safe_mean(foot_downward_specific_ke_all_tensor),
+        "foot_downward_specific_ke_all_p95": _safe_quantile(foot_downward_specific_ke_all_tensor, 0.95),
         "raw_tracking_lin_mean": raw_tracking_lin_mean,
         "raw_tracking_lin_mean_var": _safe_var(per_env_raw_tracking_lin_mean),
         "raw_tracking_lin_mean_std": _safe_std(per_env_raw_tracking_lin_mean),
@@ -1204,6 +1273,9 @@ def _evaluate_fast_sac_checkpoint(
         "touchdown_fz_trace": _nanmean_over_env(touchdown_fz_trace_env_np),
         "touchdown_fz_trace_std": _nanstd_over_env(touchdown_fz_trace_env_np),
         "touchdown_fz_trace_env": touchdown_fz_trace_env_np,
+        "touchdown_specific_ke_trace": _nanmean_over_env(touchdown_specific_ke_trace_env_np),
+        "touchdown_specific_ke_trace_std": _nanstd_over_env(touchdown_specific_ke_trace_env_np),
+        "touchdown_specific_ke_trace_env": touchdown_specific_ke_trace_env_np,
         "lin_vel_error_trace": _nanmean_over_env(lin_vel_error_trace_env_np),
         "lin_vel_error_trace_std": _nanstd_over_env(lin_vel_error_trace_env_np),
         "lin_vel_error_trace_env": lin_vel_error_trace_env_np,
@@ -1237,6 +1309,21 @@ def _evaluate_fast_sac_checkpoint(
         "foot_downward_vz_right_trace": _nanmean_over_env(foot_downward_vz_right_trace_env_np),
         "foot_downward_vz_right_trace_std": _nanstd_over_env(foot_downward_vz_right_trace_env_np),
         "foot_downward_vz_right_trace_env": foot_downward_vz_right_trace_env_np,
+        "foot_downward_specific_ke_mean_trace": _nanmean_over_env(foot_downward_specific_ke_mean_trace_env_np),
+        "foot_downward_specific_ke_mean_trace_std": _nanstd_over_env(
+            foot_downward_specific_ke_mean_trace_env_np
+        ),
+        "foot_downward_specific_ke_mean_trace_env": foot_downward_specific_ke_mean_trace_env_np,
+        "foot_downward_specific_ke_left_trace": _nanmean_over_env(foot_downward_specific_ke_left_trace_env_np),
+        "foot_downward_specific_ke_left_trace_std": _nanstd_over_env(
+            foot_downward_specific_ke_left_trace_env_np
+        ),
+        "foot_downward_specific_ke_left_trace_env": foot_downward_specific_ke_left_trace_env_np,
+        "foot_downward_specific_ke_right_trace": _nanmean_over_env(foot_downward_specific_ke_right_trace_env_np),
+        "foot_downward_specific_ke_right_trace_std": _nanstd_over_env(
+            foot_downward_specific_ke_right_trace_env_np
+        ),
+        "foot_downward_specific_ke_right_trace_env": foot_downward_specific_ke_right_trace_env_np,
         "per_env_lin_vel_rmse": _tensor_to_numpy(per_env_lin_vel_rmse),
         "per_env_lin_vel_error_mean": _tensor_to_numpy(per_env_lin_vel_error_mean),
         "per_env_yaw_rate_rmse": _tensor_to_numpy(per_env_yaw_rate_rmse),
@@ -1247,14 +1334,19 @@ def _evaluate_fast_sac_checkpoint(
         "per_env_touchdown_count": _tensor_to_numpy(touchdown_count_env),
         "per_env_touchdown_vz_mean": _tensor_to_numpy(per_env_touchdown_vz_mean),
         "per_env_touchdown_fz_mean": _tensor_to_numpy(per_env_touchdown_fz_mean),
+        "per_env_touchdown_specific_ke_mean": _tensor_to_numpy(per_env_touchdown_specific_ke_mean),
         "foot_fz_all": _tensor_to_numpy(foot_fz_all_tensor),
         "foot_downward_vz_all": _tensor_to_numpy(foot_downward_vz_all_tensor),
+        "foot_downward_specific_ke_all": _tensor_to_numpy(foot_downward_specific_ke_all_tensor),
         "touchdown_vz": _tensor_to_numpy(touchdown_vz_tensor),
         "touchdown_fz": _tensor_to_numpy(touchdown_fz_tensor),
+        "touchdown_specific_ke": _tensor_to_numpy(touchdown_specific_ke_tensor),
         "touchdown_vz_left": _tensor_to_numpy(touchdown_vz_left_tensor),
         "touchdown_vz_right": _tensor_to_numpy(touchdown_vz_right_tensor),
         "touchdown_fz_left": _tensor_to_numpy(touchdown_fz_left_tensor),
         "touchdown_fz_right": _tensor_to_numpy(touchdown_fz_right_tensor),
+        "touchdown_specific_ke_left": _tensor_to_numpy(touchdown_specific_ke_left_tensor),
+        "touchdown_specific_ke_right": _tensor_to_numpy(touchdown_specific_ke_right_tensor),
         "contact_fz": _tensor_to_numpy(contact_fz_tensor),
     }
     return BenchmarkResult(metrics=metrics, arrays=arrays)
@@ -1684,6 +1776,13 @@ def _plot_left_right_metric_vs_weight(results: list[dict[str, Any]], plots_dir: 
             "Touchdown Vertical Force P95",
             "N",
         ),
+        (
+            "touchdown_specific_ke_p95",
+            "touchdown_specific_ke_left_p95",
+            "touchdown_specific_ke_right_p95",
+            "Touchdown Specific Impact Kinetic Energy P95",
+            "J/kg",
+        ),
     ]
 
     for metric_base, left_key, right_key, title, ylabel in metric_specs:
@@ -1744,8 +1843,12 @@ def _plot_time_series_comparisons(
         ("foot_downward_vz_mean_trace", "Mean Downward Foot Speed", "m/s"),
         ("foot_downward_vz_left_trace", "Left Downward Foot Speed", "m/s"),
         ("foot_downward_vz_right_trace", "Right Downward Foot Speed", "m/s"),
+        ("foot_downward_specific_ke_mean_trace", "Mean Specific Downward Foot Kinetic Energy", "J/kg"),
+        ("foot_downward_specific_ke_left_trace", "Left Specific Downward Foot Kinetic Energy", "J/kg"),
+        ("foot_downward_specific_ke_right_trace", "Right Specific Downward Foot Kinetic Energy", "J/kg"),
         ("touchdown_vz_trace", "Touchdown Vertical Speed", "m/s"),
         ("touchdown_fz_trace", "Touchdown Vertical Force", "N"),
+        ("touchdown_specific_ke_trace", "Touchdown Specific Impact Kinetic Energy", "J/kg"),
     ]
 
     for scenario_name in scenario_names:
@@ -1951,12 +2054,23 @@ def _metric_names_for_plots() -> list[str]:
         "touchdown_fz_left_p95",
         "touchdown_fz_right_mean",
         "touchdown_fz_right_p95",
+        "touchdown_specific_ke_mean",
+        "touchdown_specific_ke_mean_across_envs",
+        "touchdown_specific_ke_mean_var_across_envs",
+        "touchdown_specific_ke_mean_std_across_envs",
+        "touchdown_specific_ke_p95",
+        "touchdown_specific_ke_left_mean",
+        "touchdown_specific_ke_left_p95",
+        "touchdown_specific_ke_right_mean",
+        "touchdown_specific_ke_right_p95",
         "contact_fz_mean",
         "contact_fz_p95",
         "foot_fz_all_mean",
         "foot_fz_all_p95",
         "foot_downward_vz_all_mean",
         "foot_downward_vz_all_p95",
+        "foot_downward_specific_ke_all_mean",
+        "foot_downward_specific_ke_all_p95",
         "raw_tracking_lin_mean",
         "raw_tracking_lin_mean_var",
         "raw_tracking_lin_mean_std",
