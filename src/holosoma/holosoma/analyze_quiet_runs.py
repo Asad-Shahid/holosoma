@@ -915,6 +915,10 @@ def _evaluate_fast_sac_checkpoint(
     prev_foot_vz = env.simulator._rigid_body_vel[:, env.feet_indices, 2].clone()
     tracking_lin_sigma = _reward_term_param(env, "tracking_lin_vel", "tracking_sigma", 0.25)
     tracking_ang_sigma = _reward_term_param(env, "tracking_ang_vel", "tracking_sigma", 0.25)
+    control_decimation = int(env.simulator.simulator_config.sim.control_decimation)
+    if control_decimation <= 0:
+        raise ValueError(f"Expected positive control_decimation, got {control_decimation}.")
+    physics_dt = float(env.dt) / float(control_decimation)
 
     lin_vel_sq_error_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
     lin_vel_error_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
@@ -928,6 +932,7 @@ def _evaluate_fast_sac_checkpoint(
     touchdown_specific_ke_sum_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
     touchdown_count_env = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
     recording_step_count = 0
+    physics_recording_step_count = 0
     fall_event_count = 0
     timeout_event_count = 0
     done_event_count = 0
@@ -942,6 +947,98 @@ def _evaluate_fast_sac_checkpoint(
     if env.feet_indices.numel() < 2:
         raise ValueError(f"Expected at least two feet for left/right analysis, got {env.feet_indices.numel()}.")
 
+    def record_physics_sample() -> tuple[Any, Any]:
+        contact_fz = torch.clamp(env.simulator.contact_forces[:, env.feet_indices, 2], min=0.0)
+        current_foot_vz = env.simulator._rigid_body_vel[:, env.feet_indices, 2]
+        current_downward_speed = torch.clamp(-current_foot_vz, min=0.0)
+        current_downward_specific_ke = 0.5 * torch.square(current_downward_speed)
+        foot_fz_all_samples.append(contact_fz.reshape(-1).detach().cpu())
+        foot_fz_mean_trace_env.append(contact_fz.mean(dim=1).detach().cpu())
+        foot_fz_left_trace_env.append(contact_fz[:, 0].detach().cpu())
+        foot_fz_right_trace_env.append(contact_fz[:, 1].detach().cpu())
+        foot_downward_vz_all_samples.append(current_downward_speed.reshape(-1).detach().cpu())
+        foot_downward_vz_mean_trace_env.append(current_downward_speed.mean(dim=1).detach().cpu())
+        foot_downward_vz_left_trace_env.append(current_downward_speed[:, 0].detach().cpu())
+        foot_downward_vz_right_trace_env.append(current_downward_speed[:, 1].detach().cpu())
+        foot_downward_specific_ke_all_samples.append(current_downward_specific_ke.reshape(-1).detach().cpu())
+        foot_downward_specific_ke_mean_trace_env.append(current_downward_specific_ke.mean(dim=1).detach().cpu())
+        foot_downward_specific_ke_left_trace_env.append(current_downward_specific_ke[:, 0].detach().cpu())
+        foot_downward_specific_ke_right_trace_env.append(current_downward_specific_ke[:, 1].detach().cpu())
+        contact_now = contact_fz > contact_threshold
+        touchdown_now = contact_now & ~prev_contact
+        downward_speed = torch.clamp(-prev_foot_vz, min=0.0)
+        touchdown_vz_by_env = torch.full(
+            (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
+        )
+        touchdown_fz_by_env = torch.full(
+            (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
+        )
+        touchdown_specific_ke_by_env = torch.full(
+            (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
+        )
+
+        if touchdown_now.any():
+            touchdown_env_ids, _touchdown_foot_ids = touchdown_now.nonzero(as_tuple=True)
+            touchdown_vz_values = downward_speed[touchdown_env_ids, _touchdown_foot_ids]
+            touchdown_fz_values = contact_fz[touchdown_env_ids, _touchdown_foot_ids]
+            touchdown_specific_ke_values = 0.5 * torch.square(touchdown_vz_values)
+            touchdown_vz_step = touchdown_vz_values.detach().cpu()
+            touchdown_fz_step = touchdown_fz_values.detach().cpu()
+            touchdown_specific_ke_step = touchdown_specific_ke_values.detach().cpu()
+            touchdown_vz_samples.append(touchdown_vz_step)
+            touchdown_fz_samples.append(touchdown_fz_step)
+            touchdown_specific_ke_samples.append(touchdown_specific_ke_step)
+            ones = torch.ones_like(touchdown_vz_values, dtype=torch.float32)
+            touchdown_vz_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_vz_values)
+            touchdown_fz_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_fz_values)
+            touchdown_specific_ke_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_specific_ke_values)
+            touchdown_count_env.scatter_add_(0, touchdown_env_ids, ones)
+            touchdown_vz_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+            touchdown_fz_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+            touchdown_specific_ke_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+            touchdown_step_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+            touchdown_vz_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_vz_values)
+            touchdown_fz_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_fz_values)
+            touchdown_specific_ke_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_specific_ke_values)
+            touchdown_step_count.scatter_add_(0, touchdown_env_ids, ones)
+            touchdown_has_sample = touchdown_step_count > 0
+            touchdown_vz_by_env[touchdown_has_sample] = (
+                touchdown_vz_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
+            )
+            touchdown_fz_by_env[touchdown_has_sample] = (
+                touchdown_fz_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
+            )
+            touchdown_specific_ke_by_env[touchdown_has_sample] = (
+                touchdown_specific_ke_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
+            )
+        touchdown_vz_trace_env.append(touchdown_vz_by_env.detach().cpu())
+        touchdown_fz_trace_env.append(touchdown_fz_by_env.detach().cpu())
+        touchdown_specific_ke_trace_env.append(touchdown_specific_ke_by_env.detach().cpu())
+        touchdown_left = touchdown_now[:, 0]
+        touchdown_right = touchdown_now[:, 1]
+        if touchdown_left.any():
+            touchdown_vz_left_step = downward_speed[:, 0][touchdown_left].detach().cpu()
+            touchdown_fz_left_step = contact_fz[:, 0][touchdown_left].detach().cpu()
+            touchdown_specific_ke_left_step = (
+                0.5 * torch.square(downward_speed[:, 0][touchdown_left])
+            ).detach().cpu()
+            touchdown_vz_left_samples.append(touchdown_vz_left_step)
+            touchdown_fz_left_samples.append(touchdown_fz_left_step)
+            touchdown_specific_ke_left_samples.append(touchdown_specific_ke_left_step)
+        if touchdown_right.any():
+            touchdown_vz_right_step = downward_speed[:, 1][touchdown_right].detach().cpu()
+            touchdown_fz_right_step = contact_fz[:, 1][touchdown_right].detach().cpu()
+            touchdown_specific_ke_right_step = (
+                0.5 * torch.square(downward_speed[:, 1][touchdown_right])
+            ).detach().cpu()
+            touchdown_vz_right_samples.append(touchdown_vz_right_step)
+            touchdown_fz_right_samples.append(touchdown_fz_right_step)
+            touchdown_specific_ke_right_samples.append(touchdown_specific_ke_right_step)
+        if contact_now.any():
+            contact_fz_samples.append(contact_fz[contact_now].detach().cpu())
+
+        return contact_now.clone(), current_foot_vz.clone()
+
     with torch.inference_mode():
         for step_idx in range(num_steps):
             _apply_fixed_command(env=env, command_tensor=command_tensor)
@@ -949,12 +1046,14 @@ def _evaluate_fast_sac_checkpoint(
             env._pre_physics_step(actions)
             env.render()
 
-            for _ in range(env.simulator.simulator_config.sim.control_decimation):
+            for _ in range(control_decimation):
                 env._apply_force_in_physics_step()
                 env.simulator.simulate_at_each_physics_step()
                 env.simulator.refresh_sim_tensors()
                 env._pre_compute_observations_callback()
                 _apply_fixed_command(env=env, command_tensor=command_tensor)
+                prev_contact, prev_foot_vz = record_physics_sample()
+                physics_recording_step_count += 1
 
             env.simulator.refresh_sim_tensors()
             env._pre_compute_observations_callback()
@@ -983,98 +1082,6 @@ def _evaluate_fast_sac_checkpoint(
             raw_tracking_lin_trace_env.append(raw_tracking_lin.detach().cpu())
             raw_tracking_ang_trace_env.append(raw_tracking_ang.detach().cpu())
             recording_step_count += 1
-
-            contact_fz = torch.clamp(env.simulator.contact_forces[:, env.feet_indices, 2], min=0.0)
-            current_foot_vz = env.simulator._rigid_body_vel[:, env.feet_indices, 2]
-            current_downward_speed = torch.clamp(-current_foot_vz, min=0.0)
-            current_downward_specific_ke = 0.5 * torch.square(current_downward_speed)
-            foot_fz_all_samples.append(contact_fz.reshape(-1).detach().cpu())
-            foot_fz_mean_trace_env.append(contact_fz.mean(dim=1).detach().cpu())
-            foot_fz_left_trace_env.append(contact_fz[:, 0].detach().cpu())
-            foot_fz_right_trace_env.append(contact_fz[:, 1].detach().cpu())
-            foot_downward_vz_all_samples.append(current_downward_speed.reshape(-1).detach().cpu())
-            foot_downward_vz_mean_trace_env.append(current_downward_speed.mean(dim=1).detach().cpu())
-            foot_downward_vz_left_trace_env.append(current_downward_speed[:, 0].detach().cpu())
-            foot_downward_vz_right_trace_env.append(current_downward_speed[:, 1].detach().cpu())
-            foot_downward_specific_ke_all_samples.append(current_downward_specific_ke.reshape(-1).detach().cpu())
-            foot_downward_specific_ke_mean_trace_env.append(current_downward_specific_ke.mean(dim=1).detach().cpu())
-            foot_downward_specific_ke_left_trace_env.append(current_downward_specific_ke[:, 0].detach().cpu())
-            foot_downward_specific_ke_right_trace_env.append(current_downward_specific_ke[:, 1].detach().cpu())
-            contact_now = contact_fz > contact_threshold
-            touchdown_now = contact_now & ~prev_contact
-            downward_speed = torch.clamp(-prev_foot_vz, min=0.0)
-            touchdown_vz_by_env = torch.full(
-                (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
-            )
-            touchdown_fz_by_env = torch.full(
-                (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
-            )
-            touchdown_specific_ke_by_env = torch.full(
-                (env.num_envs,), float("nan"), device=env.device, dtype=torch.float32
-            )
-
-            if touchdown_now.any():
-                touchdown_env_ids, _touchdown_foot_ids = touchdown_now.nonzero(as_tuple=True)
-                touchdown_vz_values = downward_speed[touchdown_env_ids, _touchdown_foot_ids]
-                touchdown_fz_values = contact_fz[touchdown_env_ids, _touchdown_foot_ids]
-                touchdown_specific_ke_values = 0.5 * torch.square(touchdown_vz_values)
-                touchdown_vz_step = touchdown_vz_values.detach().cpu()
-                touchdown_fz_step = touchdown_fz_values.detach().cpu()
-                touchdown_specific_ke_step = touchdown_specific_ke_values.detach().cpu()
-                touchdown_vz_samples.append(touchdown_vz_step)
-                touchdown_fz_samples.append(touchdown_fz_step)
-                touchdown_specific_ke_samples.append(touchdown_specific_ke_step)
-                ones = torch.ones_like(touchdown_vz_values, dtype=torch.float32)
-                touchdown_vz_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_vz_values)
-                touchdown_fz_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_fz_values)
-                touchdown_specific_ke_sum_env.scatter_add_(0, touchdown_env_ids, touchdown_specific_ke_values)
-                touchdown_count_env.scatter_add_(0, touchdown_env_ids, ones)
-                touchdown_vz_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
-                touchdown_fz_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
-                touchdown_specific_ke_step_sum = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
-                touchdown_step_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
-                touchdown_vz_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_vz_values)
-                touchdown_fz_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_fz_values)
-                touchdown_specific_ke_step_sum.scatter_add_(0, touchdown_env_ids, touchdown_specific_ke_values)
-                touchdown_step_count.scatter_add_(0, touchdown_env_ids, ones)
-                touchdown_has_sample = touchdown_step_count > 0
-                touchdown_vz_by_env[touchdown_has_sample] = (
-                    touchdown_vz_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
-                )
-                touchdown_fz_by_env[touchdown_has_sample] = (
-                    touchdown_fz_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
-                )
-                touchdown_specific_ke_by_env[touchdown_has_sample] = (
-                    touchdown_specific_ke_step_sum[touchdown_has_sample] / touchdown_step_count[touchdown_has_sample]
-                )
-            touchdown_vz_trace_env.append(touchdown_vz_by_env.detach().cpu())
-            touchdown_fz_trace_env.append(touchdown_fz_by_env.detach().cpu())
-            touchdown_specific_ke_trace_env.append(touchdown_specific_ke_by_env.detach().cpu())
-            touchdown_left = touchdown_now[:, 0]
-            touchdown_right = touchdown_now[:, 1]
-            if touchdown_left.any():
-                touchdown_vz_left_step = downward_speed[:, 0][touchdown_left].detach().cpu()
-                touchdown_fz_left_step = contact_fz[:, 0][touchdown_left].detach().cpu()
-                touchdown_specific_ke_left_step = (
-                    0.5 * torch.square(downward_speed[:, 0][touchdown_left])
-                ).detach().cpu()
-                touchdown_vz_left_samples.append(touchdown_vz_left_step)
-                touchdown_fz_left_samples.append(touchdown_fz_left_step)
-                touchdown_specific_ke_left_samples.append(touchdown_specific_ke_left_step)
-            if touchdown_right.any():
-                touchdown_vz_right_step = downward_speed[:, 1][touchdown_right].detach().cpu()
-                touchdown_fz_right_step = contact_fz[:, 1][touchdown_right].detach().cpu()
-                touchdown_specific_ke_right_step = (
-                    0.5 * torch.square(downward_speed[:, 1][touchdown_right])
-                ).detach().cpu()
-                touchdown_vz_right_samples.append(touchdown_vz_right_step)
-                touchdown_fz_right_samples.append(touchdown_fz_right_step)
-                touchdown_specific_ke_right_samples.append(touchdown_specific_ke_right_step)
-            if contact_now.any():
-                contact_fz_samples.append(contact_fz[contact_now].detach().cpu())
-
-            prev_contact = contact_now.clone()
-            prev_foot_vz = current_foot_vz.clone()
 
             env._post_physics_step()
             _apply_fixed_command(env=env, command_tensor=command_tensor)
@@ -1188,7 +1195,10 @@ def _evaluate_fast_sac_checkpoint(
     metrics = {
         "num_envs": env.num_envs,
         "num_steps": num_steps,
-        "num_recording_steps": recording_step_count,
+        "num_recording_steps": physics_recording_step_count,
+        "num_policy_recording_steps": recording_step_count,
+        "num_physics_recording_steps": physics_recording_step_count,
+        "control_decimation": control_decimation,
         "lin_vel_rmse": lin_vel_rmse,
         "lin_vel_rmse_var": _safe_var(per_env_lin_vel_rmse),
         "lin_vel_rmse_std": _safe_std(per_env_lin_vel_rmse),
@@ -1256,17 +1266,25 @@ def _evaluate_fast_sac_checkpoint(
         "raw_tracking_ang_mean": raw_tracking_ang_mean,
         "raw_tracking_ang_mean_var": _safe_var(per_env_raw_tracking_ang_mean),
         "raw_tracking_ang_mean_std": _safe_std(per_env_raw_tracking_ang_mean),
-        "analysis_dt_s": float(env.dt),
-        "recording_dt_s": float(env.dt),
+        "analysis_dt_s": physics_dt,
+        "recording_dt_s": physics_dt,
+        "physics_dt_s": physics_dt,
+        "control_dt_s": float(env.dt),
         "policy_dt_s": float(env.dt),
-        "recording_frequency_hz": float(1.0 / float(env.dt)),
+        "recording_frequency_hz": float(1.0 / physics_dt),
+        "physics_frequency_hz": float(1.0 / physics_dt),
+        "control_frequency_hz": float(1.0 / float(env.dt)),
         "policy_frequency_hz": float(1.0 / float(env.dt)),
         "rollout_duration_s": float(num_steps) * float(env.dt),
     }
     time_s = (np.arange(recording_step_count, dtype=np.float32) + np.float32(1.0)) * np.float32(env.dt)
+    time_s_physics = (
+        (np.arange(physics_recording_step_count, dtype=np.float32) + np.float32(1.0)) * np.float32(physics_dt)
+    )
     arrays = {
         "command": np.asarray(scenario.command, dtype=np.float32),
         "time_s": time_s,
+        "time_s_physics": time_s_physics,
         "touchdown_vz_trace": _nanmean_over_env(touchdown_vz_trace_env_np),
         "touchdown_vz_trace_std": _nanstd_over_env(touchdown_vz_trace_env_np),
         "touchdown_vz_trace_env": touchdown_vz_trace_env_np,
@@ -1443,9 +1461,14 @@ def _save_benchmark_arrays(
         "checkpoint_step": resolved_run.checkpoint_step,
         "analysis_dt_s": benchmark_result.metrics.get("analysis_dt_s"),
         "recording_dt_s": benchmark_result.metrics.get("recording_dt_s"),
+        "physics_dt_s": benchmark_result.metrics.get("physics_dt_s"),
+        "control_dt_s": benchmark_result.metrics.get("control_dt_s"),
         "policy_dt_s": benchmark_result.metrics.get("policy_dt_s"),
         "recording_frequency_hz": benchmark_result.metrics.get("recording_frequency_hz"),
+        "physics_frequency_hz": benchmark_result.metrics.get("physics_frequency_hz"),
+        "control_frequency_hz": benchmark_result.metrics.get("control_frequency_hz"),
         "policy_frequency_hz": benchmark_result.metrics.get("policy_frequency_hz"),
+        "control_decimation": benchmark_result.metrics.get("control_decimation"),
         "rollout_duration_s": benchmark_result.metrics.get("rollout_duration_s"),
     }
     np.savez_compressed(
@@ -1832,23 +1855,43 @@ def _plot_time_series_comparisons(
 ) -> None:
     scenario_names = sorted({row["scenario"] for row in results})
     trace_specs = [
-        ("lin_vel_error_trace", "Linear Velocity Error", "m/s"),
-        ("yaw_rate_error_trace", "Yaw Rate Error", "rad/s"),
-        ("gravity_xy_trace", "Projected Gravity XY Norm", ""),
-        ("raw_tracking_lin_trace", "Raw Linear Tracking Reward", ""),
-        ("raw_tracking_ang_trace", "Raw Angular Tracking Reward", ""),
-        ("foot_fz_mean_trace", "Mean Vertical Foot Force", "N"),
-        ("foot_fz_left_trace", "Left Vertical Foot Force", "N"),
-        ("foot_fz_right_trace", "Right Vertical Foot Force", "N"),
-        ("foot_downward_vz_mean_trace", "Mean Downward Foot Speed", "m/s"),
-        ("foot_downward_vz_left_trace", "Left Downward Foot Speed", "m/s"),
-        ("foot_downward_vz_right_trace", "Right Downward Foot Speed", "m/s"),
-        ("foot_downward_specific_ke_mean_trace", "Mean Specific Downward Foot Kinetic Energy", "J/kg"),
-        ("foot_downward_specific_ke_left_trace", "Left Specific Downward Foot Kinetic Energy", "J/kg"),
-        ("foot_downward_specific_ke_right_trace", "Right Specific Downward Foot Kinetic Energy", "J/kg"),
-        ("touchdown_vz_trace", "Touchdown Vertical Speed", "m/s"),
-        ("touchdown_fz_trace", "Touchdown Vertical Force", "N"),
-        ("touchdown_specific_ke_trace", "Touchdown Specific Impact Kinetic Energy", "J/kg"),
+        ("lin_vel_error_trace", "Linear Velocity Error", "m/s", "time_s"),
+        ("yaw_rate_error_trace", "Yaw Rate Error", "rad/s", "time_s"),
+        ("gravity_xy_trace", "Projected Gravity XY Norm", "", "time_s"),
+        ("raw_tracking_lin_trace", "Raw Linear Tracking Reward", "", "time_s"),
+        ("raw_tracking_ang_trace", "Raw Angular Tracking Reward", "", "time_s"),
+        ("foot_fz_mean_trace", "Mean Vertical Foot Force", "N", "time_s_physics"),
+        ("foot_fz_left_trace", "Left Vertical Foot Force", "N", "time_s_physics"),
+        ("foot_fz_right_trace", "Right Vertical Foot Force", "N", "time_s_physics"),
+        ("foot_downward_vz_mean_trace", "Mean Downward Foot Speed", "m/s", "time_s_physics"),
+        ("foot_downward_vz_left_trace", "Left Downward Foot Speed", "m/s", "time_s_physics"),
+        ("foot_downward_vz_right_trace", "Right Downward Foot Speed", "m/s", "time_s_physics"),
+        (
+            "foot_downward_specific_ke_mean_trace",
+            "Mean Specific Downward Foot Kinetic Energy",
+            "J/kg",
+            "time_s_physics",
+        ),
+        (
+            "foot_downward_specific_ke_left_trace",
+            "Left Specific Downward Foot Kinetic Energy",
+            "J/kg",
+            "time_s_physics",
+        ),
+        (
+            "foot_downward_specific_ke_right_trace",
+            "Right Specific Downward Foot Kinetic Energy",
+            "J/kg",
+            "time_s_physics",
+        ),
+        ("touchdown_vz_trace", "Touchdown Vertical Speed", "m/s", "time_s_physics"),
+        ("touchdown_fz_trace", "Touchdown Vertical Force", "N", "time_s_physics"),
+        (
+            "touchdown_specific_ke_trace",
+            "Touchdown Specific Impact Kinetic Energy",
+            "J/kg",
+            "time_s_physics",
+        ),
     ]
 
     for scenario_name in scenario_names:
@@ -1863,7 +1906,7 @@ def _plot_time_series_comparisons(
         )
         scenario_stem = _slugify(scenario_name)
 
-        for trace_name, title, ylabel in trace_specs:
+        for trace_name, title, ylabel, time_key in trace_specs:
             fig, ax = plt.subplots(figsize=(24, 6))
             plotted_any = False
 
@@ -1872,9 +1915,9 @@ def _plot_time_series_comparisons(
                 if not data_path.exists():
                     continue
                 with np.load(data_path, allow_pickle=False) as data:
-                    if "time_s" not in data or trace_name not in data:
+                    if time_key not in data or trace_name not in data:
                         continue
-                    time_s = data["time_s"]
+                    time_s = data[time_key]
                     values = data[trace_name]
                     std_values = data[f"{trace_name}_std"] if f"{trace_name}_std" in data else None
 
