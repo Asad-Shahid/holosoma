@@ -1724,6 +1724,8 @@ def _plot_metric_heatmaps(results: list[dict[str, Any]], plots_dir: Path, plt) -
         ax.set_xticklabels(scenario_names, rotation=25, ha="right")
         ax.set_yticks(np.arange(len(run_names)))
         ax.set_yticklabels(run_names, fontsize=8)
+        for tick_label, run_name in zip(ax.get_yticklabels(), run_names):
+            tick_label.set_color(_plot_color_for_run_name(run_name))
         fig.colorbar(image, ax=ax, label=metric_name)
         fig.tight_layout()
         fig.savefig(plots_dir / f"{metric_name}_heatmap.png", dpi=200)
@@ -1745,11 +1747,7 @@ def _plot_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) 
 
         for axis, scenario_name in zip(axes.flatten(), scenario_names):
             scenario_rows = [row for row in results if row["scenario"] == scenario_name]
-            for category, color in (
-                ("not_gated", "tab:blue"),
-                ("gated", "tab:orange"),
-                ("olaf", "tab:red"),
-            ):
+            for category in ("not_gated", "gated", "olaf"):
                 category_rows = sorted(
                     (row for row in scenario_rows if row["category"] == category),
                     key=_plot_weight_value,
@@ -1758,12 +1756,18 @@ def _plot_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) 
                     continue
                 weights = [_plot_weight_value(row) for row in category_rows]
                 values = [float(row.get(metric_name, np.nan)) for row in category_rows]
+                color = _plot_color_for_row(category_rows[0])
                 axis.plot(weights, values, marker="o", label=category, color=color)
 
             baseline_for_scenario = [row for row in baseline_rows if row["scenario"] == scenario_name]
             if baseline_for_scenario:
                 baseline_value = float(baseline_for_scenario[0].get(metric_name, np.nan))
-                axis.axhline(baseline_value, color="tab:green", linestyle="--", label="baseline")
+                axis.axhline(
+                    baseline_value,
+                    color=_plot_color_for_row(baseline_for_scenario[0]),
+                    linestyle="--",
+                    label="baseline",
+                )
 
             axis.set_title(f"{metric_name} | {scenario_name}")
             axis.set_xlabel("Effective Reward Weight Magnitude")
@@ -1778,12 +1782,6 @@ def _plot_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) 
 
 def _plot_left_right_metric_vs_weight(results: list[dict[str, Any]], plots_dir: Path, plt) -> None:
     scenario_names = sorted({row["scenario"] for row in results})
-    category_colors = {
-        "baseline": "tab:green",
-        "gated": "tab:blue",
-        "not_gated": "tab:orange",
-        "olaf": "tab:red",
-    }
     metric_specs = [
         (
             "touchdown_vz_p95",
@@ -1830,7 +1828,7 @@ def _plot_left_right_metric_vs_weight(results: list[dict[str, Any]], plots_dir: 
                 weights = [_plot_weight_value(row) for row in category_rows]
                 left_values = [float(row.get(left_key, np.nan)) for row in category_rows]
                 right_values = [float(row.get(right_key, np.nan)) for row in category_rows]
-                color = category_colors.get(category, None)
+                color = _plot_color_for_row(category_rows[0])
                 axis.plot(weights, left_values, marker="o", linestyle="-", color=color, label=f"{category} left")
                 axis.plot(weights, right_values, marker="s", linestyle="--", color=color, label=f"{category} right")
                 plotted_any = True
@@ -1926,7 +1924,8 @@ def _plot_time_series_comparisons(
                     continue
 
                 label = f"{row['run_name']} | {row['checkpoint_name']}"
-                ax.plot(time_s[valid], values[valid], linewidth=0.5, label=label)
+                color = _plot_color_for_row(row)
+                ax.plot(time_s[valid], values[valid], linewidth=0.5, label=label, color=color)
                 if std_values is not None:
                     std_valid = valid & np.isfinite(std_values)
                     if std_valid.any():
@@ -1935,6 +1934,7 @@ def _plot_time_series_comparisons(
                             values[std_valid] - std_values[std_valid],
                             values[std_valid] + std_values[std_valid],
                             alpha=0.12,
+                            color=color,
                         )
                 plotted_any = True
 
@@ -1969,6 +1969,7 @@ def _plot_penalty_scale_history(resolved_runs: list[ResolvedRun], output_dir: Pa
     scale_axis, weight_axis = axes.flatten()
     for resolved_run in runs_with_history:
         points = resolved_run.penalty_scale_history
+        color = _plot_color_for_run_name(resolved_run.spec.run_name)
         x_values = [
             point.global_step if point.global_step is not None else index
             for index, point in enumerate(points)
@@ -1977,13 +1978,21 @@ def _plot_penalty_scale_history(resolved_runs: list[ResolvedRun], output_dir: Pa
         effective_weight_values = [
             abs(resolved_run.spec.reward_weight * point.penalty_scale) for point in points
         ]
-        scale_axis.plot(x_values, scale_values, marker="o", markersize=3, label=resolved_run.spec.run_name)
+        scale_axis.plot(
+            x_values,
+            scale_values,
+            marker="o",
+            markersize=3,
+            label=resolved_run.spec.run_name,
+            color=color,
+        )
         weight_axis.plot(
             x_values,
             effective_weight_values,
             marker="o",
             markersize=3,
             label=resolved_run.spec.run_name,
+            color=color,
         )
 
     scale_axis.set_title("penalty_scale")
@@ -2008,6 +2017,32 @@ def _plot_weight_value(row: dict[str, Any]) -> float:
     if effective_weight is not None:
         return abs(effective_weight)
     return abs(float(row["reward_weight"]))
+
+
+def _plot_color_for_row(row: dict[str, Any]) -> str:
+    color = _plot_color_for_run_name(str(row.get("run_name", "")))
+    if color != "tab:gray":
+        return color
+
+    category = str(row.get("category", ""))
+    if category == "baseline":
+        return "tab:blue"
+    if category == "not_gated":
+        return "tab:orange"
+    if category == "olaf":
+        return "tab:green"
+    return color
+
+
+def _plot_color_for_run_name(run_name: str) -> str:
+    normalized = run_name.lower()
+    if normalized == "basic_fast_sac" or "basic" in normalized:
+        return "tab:blue"
+    if "not_gated" in normalized and "10" in normalized:
+        return "tab:orange"
+    if "olaf" in normalized and "10" in normalized:
+        return "tab:green"
+    return "tab:gray"
 
 
 def _concat_samples(samples):
