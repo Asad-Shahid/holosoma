@@ -106,12 +106,20 @@ class FootState:
 
         self._vz_prev = vz
 
-    def log(self, log_dict: dict) -> None:
+    def log(
+        self,
+        log_dict: dict,
+        phase: torch.Tensor | None = None,
+        foot_height: torch.Tensor | None = None,
+    ) -> None:
         """Write the feet/ metrics for the current step into log_dict.
 
         Event timeline per touchdown: pre_touchdown_vz is sampled one step
         before the fire (last free-flight velocity), touchdown_fz at the fire
         step, and the fz_peak/impulse/ratio over the 60ms window after it.
+
+        phase / foot_height (per-foot, fed by the env which owns those signals)
+        are logged at the fire step as a gait-gate check.
         """
         nan = torch.full_like(self.fz, float("nan"))
         label = self._window_label
@@ -128,6 +136,13 @@ class FootState:
         log_dict[f"feet/fz_peak_{label}"] = torch.where(self._window_completed, self._window_peak_fz, nan).nanmean()
         log_dict[f"feet/impulse_{label}"] = torch.where(self._window_completed, self._window_impulse, nan).nanmean()
         log_dict[f"feet/fz_peak_ratio_{label}"] = torch.where(self._window_completed, peak_to_initial, nan).nanmean()
+        # Gait-gate check: where in the cycle / how high the foot is at touchdown.
+        # Exposes a misaligned phase/height gate.
+        if phase is not None:
+            phase_progress = torch.remainder((phase + torch.pi) / (2 * torch.pi), 1.0)
+            log_dict["feet/phase_at_touchdown"] = torch.where(self.fired, phase_progress, nan).nanmean()
+        if foot_height is not None:
+            log_dict["feet/foot_height_at_touchdown"] = torch.where(self.fired, foot_height, nan).nanmean()
         if self.fz.shape[1] >= 2:
             left, right = self.fired[:, 0], self.fired[:, 1]
             log_dict["feet/pre_touchdown_vz_left"] = torch.where(left, self.vz_pre[:, 0], nan[:, 0]).nanmean()

@@ -53,55 +53,57 @@ _MIN_STEPS = 10
 # and gamed by not moving, so it is dropped for an env that didn't walk upright.
 _ALWAYS_ON = {"vxy_rmse", "vyaw_rmse", "touchdown_count"}
 
-# Baseline for the delta-vs-baseline heatmap. fastsac, symmetry off, flat terrain.
-# Source: https://wandb.ai/matteo-calabria01-maedmatt/IDSIA/runs/60zwuqkq
-# Measured on asad (RTX 4090) at num_envs=64 with randomization:g1-benchmark, so the
+# Baseline for the delta-vs-baseline heatmap. fastsac, "baseline_feetori" run.
+# Source: https://wandb.ai/matteo-calabria01-maedmatt/IDSIA/runs/fvp6tbu7
+# Measured on NASA (RTX 3070) at num_envs=64 with randomization:g1-benchmark, so the
 # deltas are only meaningful for policies benched on the same hardware + config.
+# NB: prior baseline was asad (RTX 4090); NASA numbers are NOT comparable to it.
 # vyaw on non-yaw and vxy on yaw scenarios are NaN.
-_BASELINE_NAME = "fastsac_no_symm_flat_60zwuqkq"
+_BASELINE_NAME = "fastsac_baseline_feetori_fvp6tbu7"
 
 _BASELINE_LOCO = {
-    "forward_03": {"vxy_rmse": 0.1768, "vyaw_rmse": float("nan"), "action_rate_rms": 21.6512, "body_accel_rms": 3.7693},
-    "forward_06": {"vxy_rmse": 0.2028, "vyaw_rmse": float("nan"), "action_rate_rms": 22.8564, "body_accel_rms": 4.4909},
-    "forward_09": {"vxy_rmse": 0.2775, "vyaw_rmse": float("nan"), "action_rate_rms": 25.1960, "body_accel_rms": 5.3152},
-    "backward_03": {"vxy_rmse": 0.1834, "vyaw_rmse": float("nan"), "action_rate_rms": 21.7099, "body_accel_rms": 3.7810},
-    "backward_06": {"vxy_rmse": 0.2430, "vyaw_rmse": float("nan"), "action_rate_rms": 23.9675, "body_accel_rms": 4.1419},
-    "backward_09": {"vxy_rmse": 0.3707, "vyaw_rmse": float("nan"), "action_rate_rms": 26.6577, "body_accel_rms": 4.5440},
-    "strafe_left": {"vxy_rmse": 0.2273, "vyaw_rmse": float("nan"), "action_rate_rms": 21.5647, "body_accel_rms": 3.8056},
-    "strafe_right": {"vxy_rmse": 0.2150, "vyaw_rmse": float("nan"), "action_rate_rms": 21.7422, "body_accel_rms": 3.6762},
-    "yaw_left": {"vxy_rmse": float("nan"), "vyaw_rmse": 0.1560, "action_rate_rms": 21.4068, "body_accel_rms": 3.5295},
-    "yaw_right": {"vxy_rmse": float("nan"), "vyaw_rmse": 0.1535, "action_rate_rms": 21.4800, "body_accel_rms": 3.6628},
-    "avg": {"vxy_rmse": 0.2371, "vyaw_rmse": 0.1548, "action_rate_rms": 22.8232, "body_accel_rms": 4.0717},
+    "forward_03": {"vxy_rmse": 0.1684, "vyaw_rmse": float("nan"), "action_rate_rms": 20.7537, "body_accel_rms": 3.8408},
+    "forward_06": {"vxy_rmse": 0.1776, "vyaw_rmse": float("nan"), "action_rate_rms": 21.3398, "body_accel_rms": 4.2678},
+    "forward_09": {"vxy_rmse": 0.2259, "vyaw_rmse": float("nan"), "action_rate_rms": 23.1862, "body_accel_rms": 4.9057},
+    "backward_03": {"vxy_rmse": 0.1552, "vyaw_rmse": float("nan"), "action_rate_rms": 21.1619, "body_accel_rms": 3.4520},
+    "backward_06": {"vxy_rmse": 0.2021, "vyaw_rmse": float("nan"), "action_rate_rms": 23.0143, "body_accel_rms": 3.5788},
+    "backward_09": {"vxy_rmse": 0.2741, "vyaw_rmse": float("nan"), "action_rate_rms": 25.4203, "body_accel_rms": 4.1945},
+    "strafe_left": {"vxy_rmse": 0.2125, "vyaw_rmse": float("nan"), "action_rate_rms": 20.8887, "body_accel_rms": 3.8606},
+    "strafe_right": {"vxy_rmse": 0.1958, "vyaw_rmse": float("nan"), "action_rate_rms": 21.0663, "body_accel_rms": 3.8171},
+    "yaw_left": {"vxy_rmse": float("nan"), "vyaw_rmse": 0.1539, "action_rate_rms": 20.7359, "body_accel_rms": 3.7589},
+    "yaw_right": {"vxy_rmse": float("nan"), "vyaw_rmse": 0.1348, "action_rate_rms": 20.9989, "body_accel_rms": 3.9008},
+    "avg": {"vxy_rmse": 0.2014, "vyaw_rmse": 0.1443, "action_rate_rms": 21.8566, "body_accel_rms": 3.9577},
 }
 
 _BASELINE_FEET = {
     "left": {
-        "forward_03": {"touchdown_vz_peak": 0.8708, "touchdown_vz_rms": 0.8363, "fz_peak_at_touchdown_mean": 987.8217},
-        "forward_06": {"touchdown_vz_peak": 0.9359, "touchdown_vz_rms": 0.8861, "fz_peak_at_touchdown_mean": 1004.0168},
-        "forward_09": {"touchdown_vz_peak": 1.0834, "touchdown_vz_rms": 0.9910, "fz_peak_at_touchdown_mean": 981.8250},
-        "backward_03": {"touchdown_vz_peak": 1.0286, "touchdown_vz_rms": 0.9705, "fz_peak_at_touchdown_mean": 1273.8926},
-        "backward_06": {"touchdown_vz_peak": 1.1495, "touchdown_vz_rms": 1.0961, "fz_peak_at_touchdown_mean": 1396.6360},
-        "backward_09": {"touchdown_vz_peak": 1.2242, "touchdown_vz_rms": 1.1696, "fz_peak_at_touchdown_mean": 1441.5125},
-        "strafe_left": {"touchdown_vz_peak": 0.9134, "touchdown_vz_rms": 0.8878, "fz_peak_at_touchdown_mean": 983.1581},
-        "strafe_right": {"touchdown_vz_peak": 0.9093, "touchdown_vz_rms": 0.8849, "fz_peak_at_touchdown_mean": 1241.2446},
-        "yaw_left": {"touchdown_vz_peak": 0.9014, "touchdown_vz_rms": 0.8737, "fz_peak_at_touchdown_mean": 1102.6381},
-        "yaw_right": {"touchdown_vz_peak": 0.9019, "touchdown_vz_rms": 0.8697, "fz_peak_at_touchdown_mean": 1099.4073},
-        "avg": {"touchdown_vz_peak": 0.9918, "touchdown_vz_rms": 0.9466, "fz_peak_at_touchdown_mean": 1151.2153},
+        "forward_03": {"touchdown_vz_peak": 0.8368, "touchdown_vz_rms": 0.8138, "fz_peak_at_touchdown_mean": 817.0503, "foot_accel_peak_at_touchdown_mean": 129.0774, "loading_rate_peak_at_touchdown_mean": 76703.8984, "foot_slip_speed_mean": 0.0109, "base_vz_peak_at_touchdown_mean": 0.3491, "base_accel_peak_at_touchdown_mean": 12.4458},
+        "forward_06": {"touchdown_vz_peak": 0.8161, "touchdown_vz_rms": 0.7739, "fz_peak_at_touchdown_mean": 820.2939, "foot_accel_peak_at_touchdown_mean": 122.4063, "loading_rate_peak_at_touchdown_mean": 103569.5372, "foot_slip_speed_mean": 0.024, "base_vz_peak_at_touchdown_mean": 0.4412, "base_accel_peak_at_touchdown_mean": 12.9434},
+        "forward_09": {"touchdown_vz_peak": 0.847, "touchdown_vz_rms": 0.7592, "fz_peak_at_touchdown_mean": 793.1153, "foot_accel_peak_at_touchdown_mean": 150.9989, "loading_rate_peak_at_touchdown_mean": 106066.2185, "foot_slip_speed_mean": 0.0388, "base_vz_peak_at_touchdown_mean": 0.537, "base_accel_peak_at_touchdown_mean": 12.538},
+        "backward_03": {"touchdown_vz_peak": 0.8704, "touchdown_vz_rms": 0.8374, "fz_peak_at_touchdown_mean": 1180.6988, "foot_accel_peak_at_touchdown_mean": 127.735, "loading_rate_peak_at_touchdown_mean": 212913.5752, "foot_slip_speed_mean": 0.0117, "base_vz_peak_at_touchdown_mean": 0.2503, "base_accel_peak_at_touchdown_mean": 15.6325},
+        "backward_06": {"touchdown_vz_peak": 0.9001, "touchdown_vz_rms": 0.8472, "fz_peak_at_touchdown_mean": 1156.6263, "foot_accel_peak_at_touchdown_mean": 139.3306, "loading_rate_peak_at_touchdown_mean": 203310.2683, "foot_slip_speed_mean": 0.0297, "base_vz_peak_at_touchdown_mean": 0.2882, "base_accel_peak_at_touchdown_mean": 13.1282},
+        "backward_09": {"touchdown_vz_peak": 0.9795, "touchdown_vz_rms": 0.8958, "fz_peak_at_touchdown_mean": 1144.4947, "foot_accel_peak_at_touchdown_mean": 147.0062, "loading_rate_peak_at_touchdown_mean": 195815.6833, "foot_slip_speed_mean": 0.0591, "base_vz_peak_at_touchdown_mean": 0.3543, "base_accel_peak_at_touchdown_mean": 11.6772},
+        "strafe_left": {"touchdown_vz_peak": 0.9021, "touchdown_vz_rms": 0.8819, "fz_peak_at_touchdown_mean": 1028.2224, "foot_accel_peak_at_touchdown_mean": 127.0523, "loading_rate_peak_at_touchdown_mean": 45025.3024, "foot_slip_speed_mean": 0.0095, "base_vz_peak_at_touchdown_mean": 0.3026, "base_accel_peak_at_touchdown_mean": 11.7652},
+        "strafe_right": {"touchdown_vz_peak": 0.8867, "touchdown_vz_rms": 0.8508, "fz_peak_at_touchdown_mean": 1186.19, "foot_accel_peak_at_touchdown_mean": 109.1735, "loading_rate_peak_at_touchdown_mean": 198158.108, "foot_slip_speed_mean": 0.0109, "base_vz_peak_at_touchdown_mean": 0.2536, "base_accel_peak_at_touchdown_mean": 16.8851},
+        "yaw_left": {"touchdown_vz_peak": 0.8953, "touchdown_vz_rms": 0.8757, "fz_peak_at_touchdown_mean": 1187.4948, "foot_accel_peak_at_touchdown_mean": 118.3354, "loading_rate_peak_at_touchdown_mean": 150300.0459, "foot_slip_speed_mean": 0.0071, "base_vz_peak_at_touchdown_mean": 0.3018, "base_accel_peak_at_touchdown_mean": 15.8356},
+        "yaw_right": {"touchdown_vz_peak": 0.9167, "touchdown_vz_rms": 0.888, "fz_peak_at_touchdown_mean": 1229.302, "foot_accel_peak_at_touchdown_mean": 105.0751, "loading_rate_peak_at_touchdown_mean": 106064.3556, "foot_slip_speed_mean": 0.0082, "base_vz_peak_at_touchdown_mean": 0.2611, "base_accel_peak_at_touchdown_mean": 14.0761},
+        "avg": {"touchdown_vz_peak": 0.8851, "touchdown_vz_rms": 0.8424, "fz_peak_at_touchdown_mean": 1054.3489, "foot_accel_peak_at_touchdown_mean": 127.6191, "loading_rate_peak_at_touchdown_mean": 139792.6993, "foot_slip_speed_mean": 0.021, "base_vz_peak_at_touchdown_mean": 0.3339, "base_accel_peak_at_touchdown_mean": 13.6927},
     },
     "right": {
-        "forward_03": {"touchdown_vz_peak": 0.8990, "touchdown_vz_rms": 0.8665, "fz_peak_at_touchdown_mean": 1056.8723},
-        "forward_06": {"touchdown_vz_peak": 0.9022, "touchdown_vz_rms": 0.8510, "fz_peak_at_touchdown_mean": 1044.9713},
-        "forward_09": {"touchdown_vz_peak": 0.9185, "touchdown_vz_rms": 0.8424, "fz_peak_at_touchdown_mean": 973.8061},
-        "backward_03": {"touchdown_vz_peak": 1.0396, "touchdown_vz_rms": 0.9923, "fz_peak_at_touchdown_mean": 1305.5843},
-        "backward_06": {"touchdown_vz_peak": 1.1604, "touchdown_vz_rms": 1.1178, "fz_peak_at_touchdown_mean": 1475.3032},
-        "backward_09": {"touchdown_vz_peak": 1.2848, "touchdown_vz_rms": 1.2527, "fz_peak_at_touchdown_mean": 1636.3417},
-        "strafe_left": {"touchdown_vz_peak": 0.9341, "touchdown_vz_rms": 0.8965, "fz_peak_at_touchdown_mean": 1225.1722},
-        "strafe_right": {"touchdown_vz_peak": 0.9976, "touchdown_vz_rms": 0.9443, "fz_peak_at_touchdown_mean": 947.6439},
-        "yaw_left": {"touchdown_vz_peak": 0.9446, "touchdown_vz_rms": 0.8915, "fz_peak_at_touchdown_mean": 992.8493},
-        "yaw_right": {"touchdown_vz_peak": 0.9601, "touchdown_vz_rms": 0.9132, "fz_peak_at_touchdown_mean": 1157.8676},
-        "avg": {"touchdown_vz_peak": 1.0041, "touchdown_vz_rms": 0.9568, "fz_peak_at_touchdown_mean": 1181.6412},
+        "forward_03": {"touchdown_vz_peak": 0.9626, "touchdown_vz_rms": 0.8995, "fz_peak_at_touchdown_mean": 931.1914, "foot_accel_peak_at_touchdown_mean": 151.8125, "loading_rate_peak_at_touchdown_mean": 85862.1607, "foot_slip_speed_mean": 0.0133, "base_vz_peak_at_touchdown_mean": 0.3952, "base_accel_peak_at_touchdown_mean": 14.3105},
+        "forward_06": {"touchdown_vz_peak": 0.8955, "touchdown_vz_rms": 0.8129, "fz_peak_at_touchdown_mean": 880.7142, "foot_accel_peak_at_touchdown_mean": 125.4287, "loading_rate_peak_at_touchdown_mean": 116342.479, "foot_slip_speed_mean": 0.0276, "base_vz_peak_at_touchdown_mean": 0.4542, "base_accel_peak_at_touchdown_mean": 13.8217},
+        "forward_09": {"touchdown_vz_peak": 0.9195, "touchdown_vz_rms": 0.7709, "fz_peak_at_touchdown_mean": 841.6933, "foot_accel_peak_at_touchdown_mean": 151.2883, "loading_rate_peak_at_touchdown_mean": 110781.1775, "foot_slip_speed_mean": 0.0486, "base_vz_peak_at_touchdown_mean": 0.537, "base_accel_peak_at_touchdown_mean": 12.6079},
+        "backward_03": {"touchdown_vz_peak": 1.0508, "touchdown_vz_rms": 0.9871, "fz_peak_at_touchdown_mean": 1223.9215, "foot_accel_peak_at_touchdown_mean": 133.2084, "loading_rate_peak_at_touchdown_mean": 215462.0718, "foot_slip_speed_mean": 0.0134, "base_vz_peak_at_touchdown_mean": 0.322, "base_accel_peak_at_touchdown_mean": 16.081},
+        "backward_06": {"touchdown_vz_peak": 1.0545, "touchdown_vz_rms": 1.0228, "fz_peak_at_touchdown_mean": 1242.6964, "foot_accel_peak_at_touchdown_mean": 156.8703, "loading_rate_peak_at_touchdown_mean": 215800.1802, "foot_slip_speed_mean": 0.0271, "base_vz_peak_at_touchdown_mean": 0.3488, "base_accel_peak_at_touchdown_mean": 13.7326},
+        "backward_09": {"touchdown_vz_peak": 1.1182, "touchdown_vz_rms": 1.0585, "fz_peak_at_touchdown_mean": 1271.9137, "foot_accel_peak_at_touchdown_mean": 174.5385, "loading_rate_peak_at_touchdown_mean": 214755.3326, "foot_slip_speed_mean": 0.0531, "base_vz_peak_at_touchdown_mean": 0.3812, "base_accel_peak_at_touchdown_mean": 13.0923},
+        "strafe_left": {"touchdown_vz_peak": 0.997, "touchdown_vz_rms": 0.9613, "fz_peak_at_touchdown_mean": 1324.9567, "foot_accel_peak_at_touchdown_mean": 127.1626, "loading_rate_peak_at_touchdown_mean": 226726.5435, "foot_slip_speed_mean": 0.0126, "base_vz_peak_at_touchdown_mean": 0.3273, "base_accel_peak_at_touchdown_mean": 19.228},
+        "strafe_right": {"touchdown_vz_peak": 1.1526, "touchdown_vz_rms": 0.9846, "fz_peak_at_touchdown_mean": 1076.0105, "foot_accel_peak_at_touchdown_mean": 155.9937, "loading_rate_peak_at_touchdown_mean": 49129.9897, "foot_slip_speed_mean": 0.013, "base_vz_peak_at_touchdown_mean": 0.3659, "base_accel_peak_at_touchdown_mean": 12.1165},
+        "yaw_left": {"touchdown_vz_peak": 0.9876, "touchdown_vz_rms": 0.9421, "fz_peak_at_touchdown_mean": 1174.3806, "foot_accel_peak_at_touchdown_mean": 123.4693, "loading_rate_peak_at_touchdown_mean": 53130.982, "foot_slip_speed_mean": 0.0131, "base_vz_peak_at_touchdown_mean": 0.2896, "base_accel_peak_at_touchdown_mean": 11.8742},
+        "yaw_right": {"touchdown_vz_peak": 1.1062, "touchdown_vz_rms": 1.0214, "fz_peak_at_touchdown_mean": 1265.3617, "foot_accel_peak_at_touchdown_mean": 127.7695, "loading_rate_peak_at_touchdown_mean": 64694.6245, "foot_slip_speed_mean": 0.0113, "base_vz_peak_at_touchdown_mean": 0.3396, "base_accel_peak_at_touchdown_mean": 12.8062},
+        "avg": {"touchdown_vz_peak": 1.0245, "touchdown_vz_rms": 0.9461, "fz_peak_at_touchdown_mean": 1123.284, "foot_accel_peak_at_touchdown_mean": 142.7542, "loading_rate_peak_at_touchdown_mean": 135268.5541, "foot_slip_speed_mean": 0.0233, "base_vz_peak_at_touchdown_mean": 0.3761, "base_accel_peak_at_touchdown_mean": 13.9671},
     },
 }
+
 
 def _mask_tracking_drift(row: dict, cmd: np.ndarray) -> None:
     """NaN-mask tracking metrics the scenario doesn't actively exercise.
@@ -233,15 +235,16 @@ def touchdown_vz_rms(vz_at_td: np.ndarray) -> float:
     return float(np.sqrt(np.mean(vz_down**2)))
 
 
-def fz_peak_at_touchdown_mean(td_idx: np.ndarray, fz: np.ndarray) -> float:
-    """Mean peak vertical contact force in a window after each touchdown.
+def _peak_in_window(sig: np.ndarray, td_idx: np.ndarray) -> float:
+    """Mean over touchdowns of the peak of `sig` in the [i, i+window) impact window.
 
-    Reference: QuietWalk (arXiv:2604.23702).
+    The peak lands a few substeps after the firing instant, so window then max.
+    Used for every per-impact peak: fz (QuietWalk, arXiv:2604.23702), tangential
+    force, foot accel, loading rate. Skips events whose window starts past the end
+    (finite-diff signals are one sample shorter than the force/velocity traces).
     """
-    if len(td_idx) == 0:
-        return 0.0
-    peaks = np.array([fz[i : i + _FZ_PEAK_WINDOW].max() for i in td_idx])
-    return float(np.mean(peaks))
+    peaks = [sig[i : i + _FZ_PEAK_WINDOW].max() for i in td_idx if i < len(sig)]
+    return float(np.mean(peaks)) if peaks else 0.0
 
 
 def action_rate_rms(action: np.ndarray, dt: float) -> float:
@@ -259,20 +262,41 @@ def body_accel_rms(lin_vel_world: np.ndarray, dt: float) -> float:
     return float(np.sqrt(np.mean(np.sum(a**2, axis=-1))))
 
 
-def _foot_metrics(npz_hi: dict, foot_idx: int, env_idx: int) -> dict[str, float]:
+def _foot_metrics(npz_hi: dict, foot_idx: int, env_idx: int, sim_dt: float) -> dict[str, float]:
     """Touchdown-derived metrics for one foot on one env. Events outside is_active are dropped."""
-    vz = npz_hi["foot_vel"][:, env_idx, foot_idx, 2]
-    fz = npz_hi["foot_force"][:, env_idx, foot_idx, 2]
+    vel = npz_hi["foot_vel"][:, env_idx, foot_idx, :]      # (T, 3) world-frame foot velocity
+    force = npz_hi["foot_force"][:, env_idx, foot_idx, :]   # (T, 3) contact force
+    vz = vel[:, 2]
+    fz = force[:, 2]
     td = detect_touchdowns(vz, fz)
     td = td[npz_hi["is_active"][td]]
     # Approach velocity spans the threshold crossing: take the more downward of
     # {pre, post}; whichever is pre-impulse holds the actual impact speed.
     vz_at_td = np.minimum(vz[td - 1], vz[td])
+    # Finite-diff at 200 Hz: the impact shock and force loading rate are sub-20ms, so the
+    # 50 Hz control stream aliases them away. diff() returns T-1 samples (_peak_in_window guards).
+    foot_accel = np.linalg.norm(np.diff(vel, axis=0) / sim_dt, axis=-1)
+    loading_rate = np.diff(fz) / sim_dt
+    # Slip/scuff: world-frame horizontal foot speed while loaded. ~0 for a planted foot,
+    # >0 only when it slides -- the channel the (normal-only) contact force can't see.
+    in_contact = fz > 1.0  # matches detect_touchdowns fire_fz
+    foot_horiz_speed = np.linalg.norm(vel[:, :2], axis=-1)
+    slip_speed = float(np.mean(foot_horiz_speed[in_contact])) if in_contact.any() else 0.0
+    # Base-drop channel: a soft-looking foot landing can hide the impact in the body dropping
+    # with it. The foot metrics above are blind to this; the base vertical shock is not.
+    base_vz = npz_hi["base_lin_vel"][:, env_idx, 2]
+    base_vz_peak = _peak_in_window(np.maximum(-base_vz, 0.0), td)
+    base_accel_peak = _peak_in_window(np.abs(np.diff(base_vz) / sim_dt), td)
     return {
         "touchdown_count": float(len(td)),
         "touchdown_vz_peak": touchdown_vz_peak(vz_at_td),
         "touchdown_vz_rms": touchdown_vz_rms(vz_at_td),
-        "fz_peak_at_touchdown_mean": fz_peak_at_touchdown_mean(td, fz),
+        "fz_peak_at_touchdown_mean": _peak_in_window(fz, td),
+        "foot_accel_peak_at_touchdown_mean": _peak_in_window(foot_accel, td),
+        "loading_rate_peak_at_touchdown_mean": _peak_in_window(loading_rate, td),
+        "foot_slip_speed_mean": slip_speed,
+        "base_vz_peak_at_touchdown_mean": base_vz_peak,
+        "base_accel_peak_at_touchdown_mean": base_accel_peak,
     }
 
 
@@ -408,7 +432,10 @@ def _log_to_wandb(loco_rows: list[dict], loco_metrics: list[str],
     # drop it. Shared color bound across L/R so asymmetries are visually comparable.
     sound = []
     for leg, (rows, metric_names) in per_leg.items():
-        metrics = [m for m in metric_names if not m.startswith("touchdown_count")]
+        # Heatmap needs a baseline scalar per metric. New metrics still show in the
+        # markdown/CSV/JSON tables but are excluded here until _BASELINE_FEET is regenerated.
+        base = _BASELINE_FEET[leg]["avg"]
+        metrics = [m for m in metric_names if m in base and not m.startswith("touchdown_count")]
         sound.append((leg, rows, metrics, _delta_matrix(rows, metrics, _BASELINE_FEET[leg])))
     sound_vbound = float(np.nanmax(np.abs(np.concatenate([d.flatten() for _, _, _, d in sound]))))
     for leg, rows, metrics, deltas in sound:
@@ -478,7 +505,7 @@ def main(args: Args) -> None:
             valid = ~fallen & walked
             per_env = []
             for n in range(num_envs):
-                row = _foot_metrics(hi, idx, env_idx=n)
+                row = _foot_metrics(hi, idx, env_idx=n, sim_dt=sim_dt)
                 if not valid[n]:  # failed the task: keep only the honest diagnostics
                     row = {k: (v if k in _ALWAYS_ON else float("nan")) for k, v in row.items()}
                 per_env.append(row)
